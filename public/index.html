@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orçamento Pessoal</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>">
+</head>
+<body class="auth-page">
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen" class="auth-container">
+  <div class="auth-card">
+    <div class="auth-logo">💰</div>
+    <h1 class="auth-title">Orçamento Pessoal</h1>
+    <p class="auth-subtitle">Controle suas finanças com inteligência</p>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('login')">Entrar</button>
+      <button class="tab-btn" onclick="showTab('register')">Criar conta</button>
+    </div>
+
+    <!-- Login -->
+    <form id="login-form" class="auth-form" onsubmit="login(event)">
+      <div class="field">
+        <label>E-mail</label>
+        <input type="email" id="login-email" placeholder="seu@email.com" required>
+      </div>
+      <div class="field">
+        <label>Senha</label>
+        <input type="password" id="login-password" placeholder="••••••" required>
+      </div>
+      <div id="login-error" class="form-error hidden"></div>
+      <button type="submit" class="btn-primary full-width">Entrar</button>
+    </form>
+
+    <!-- Register -->
+    <form id="register-form" class="auth-form hidden" onsubmit="register(event)">
+      <div class="field">
+        <label>Nome</label>
+        <input type="text" id="reg-name" placeholder="Seu nome" required>
+      </div>
+      <div class="field">
+        <label>E-mail</label>
+        <input type="email" id="reg-email" placeholder="seu@email.com" required>
+      </div>
+      <div class="field">
+        <label>Senha</label>
+        <input type="password" id="reg-password" placeholder="mínimo 6 caracteres" required minlength="6">
+      </div>
+      <div id="reg-error" class="form-error hidden"></div>
+      <button type="submit" class="btn-primary full-width">Criar conta grátis</button>
+    </form>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app-screen" class="hidden">
+
+  <!-- Sidebar -->
+  <nav id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-logo">💰</span>
+      <span class="sidebar-title">Orçamento</span>
+      <button class="sidebar-close" onclick="toggleSidebar()">✕</button>
+    </div>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">U</div>
+      <div>
+        <div class="user-name" id="user-name-nav">Usuário</div>
+        <div class="user-email" id="user-email-nav">email</div>
+      </div>
+    </div>
+    <ul class="nav-menu">
+      <li><a href="#" class="nav-item active" onclick="navigate('dashboard')">📊 Dashboard</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('transactions')">💸 Lançamentos</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('categories')">📋 Categorias</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('cards')">💳 Cartões</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('savings')">🏦 Cofrinhos</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('goals')">🎯 Metas</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('report')">📅 Relatório</a></li>
+    </ul>
+    <button class="btn-logout" onclick="logout()">🚪 Sair</button>
+  </nav>
+
+  <!-- Overlay -->
+  <div id="sidebar-overlay" class="sidebar-overlay hidden" onclick="toggleSidebar()"></div>
+
+  <!-- Main content -->
+  <div class="main-wrapper">
+    <header class="topbar">
+      <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+      <h2 id="page-title">Dashboard</h2>
+      <div class="month-selector">
+        <button onclick="changeMonth(-1)">‹</button>
+        <span id="month-display">Mai 2025</span>
+        <button onclick="changeMonth(1)">›</button>
+      </div>
+    </header>
+
+    <main class="content" id="main-content">
+      <!-- Pages rendered by JS -->
+    </main>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modal-title">Título</h3>
+      <button onclick="closeModal()">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

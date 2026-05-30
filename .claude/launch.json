@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orcamento-app",
+      "runtimeExecutable": "C:\\Users\\sandr\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe",
+      "runtimeArgs": ["--experimental-sqlite", "server.js"],
+      "port": 3000,
+      "cwd": "C:\\Users\\sandr\\OneDrive\\Área de Trabalho\\cloude\\orcamento-app"
+    }
+  ]
+}
