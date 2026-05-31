@@ -3,3 +3,4 @@ orcamento.db
 *.db-shm
 *.db-wal
 .env
+desktop.ini
