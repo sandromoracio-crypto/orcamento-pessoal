@@ -6,7 +6,7 @@ let charts = {};
 
 const CATEGORIES = ['Moradia','Alimentação','Transporte','Saúde','Educação','Lazer','Vestuário','Contas','Outros'];
 const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-const CAT_COLORS = ['#2e7d32','#388e3c','#43a047','#66bb6a','#81c784','#a5d6a7','#1b5e20','#c8e6c9','#558b2f'];
+const CAT_COLORS = ['#1565C0','#E65100','#6A1B9A','#B71C1C','#00838F','#F9A825','#AD1457','#37474F','#558B2F'];
 const PM_TYPES = { dinheiro: '💵 Dinheiro', pix: '⚡ PIX', credito: '💳 Crédito', debito: '🏧 Débito' };
 let paymentMethods = []; // cached list
 let savingsAccounts = []; // cached list
@@ -340,8 +340,13 @@ async function renderDashboard() {
     $('chart-pie').parentElement.innerHTML = '<div class="empty-state" style="height:200px"><div class="empty-icon">🥧</div><p>Sem despesas neste mês</p></div>';
   }
 
-  // Monthly bar chart
-  const monthly = [...(data.monthly || [])].reverse().slice(-6);
+  // Monthly bar chart — current month + next 5
+  const targetMonths = Array.from({length: 6}, (_, i) => {
+    const [y, m] = currentMonth.split('-').map(Number);
+    return new Date(y, m - 1 + i, 1).toISOString().slice(0, 7);
+  });
+  const monthMap = Object.fromEntries((data.monthly || []).map(m => [m.month, m]));
+  const monthly = targetMonths.map(m => monthMap[m] || { month: m, income: 0, expense: 0 });
   if (monthly.length > 0) {
     charts['monthly'] = new Chart($('chart-monthly'), {
       type: 'bar',
