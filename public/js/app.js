@@ -182,6 +182,7 @@ async function bootApp() {
   savingsAccounts = await api('GET', '/api/savings').catch(() => []);
 
   updateMonthDisplay();
+  loadSidebarPanels();
   navigate('dashboard');
 }
 
@@ -195,6 +196,7 @@ function changeMonth(dir) {
   const d = new Date(y, m - 1 + dir, 1);
   currentMonth = d.toISOString().slice(0, 7);
   updateMonthDisplay();
+  loadSidebarPanels();
   const active = document.querySelector('.nav-item.active');
   if (active) navigate(active.dataset.page || 'dashboard');
 }
@@ -243,6 +245,7 @@ function selectMonth(val) {
   currentMonth = val;
   updateMonthDisplay();
   $('month-picker').classList.add('hidden');
+  loadSidebarPanels();
   const active = document.querySelector('.nav-item.active');
   if (active) navigate(active.dataset.page || 'dashboard');
 }
@@ -252,6 +255,58 @@ document.addEventListener('click', e => {
   const sel = $('month-selector');
   if (sel && !sel.contains(e.target)) $('month-picker')?.classList.add('hidden');
 });
+
+// ── Sidebar Panels ────────────────────────────────────────────
+let _sidePanelOpen = { receitas: false, despesas: false };
+
+function toggleSidePanel(type) {
+  const body = $(`panel-${type}-body`);
+  const chevron = $(`chevron-${type}`);
+  const isOpen = !body.classList.contains('hidden');
+  body.classList.toggle('hidden', isOpen);
+  chevron.classList.toggle('open', !isOpen);
+  _sidePanelOpen[type] = !isOpen;
+  if (!isOpen) loadSidebarPanels(type); // reload on open
+}
+
+async function loadSidebarPanels(only) {
+  if (!token) return;
+  try {
+    const txs = await api('GET', `/api/transactions?month=${currentMonth}`);
+    const receitas = txs.filter(t => t.type === 'Receita');
+    const despesas = txs.filter(t => t.type === 'Despesa');
+
+    // Totals always update
+    const totR = receitas.reduce((s,t) => s + t.amount, 0);
+    const totD = despesas.reduce((s,t) => s + t.amount, 0);
+    const elR = $('panel-receitas-total');
+    const elD = $('panel-despesas-total');
+    if (elR) elR.textContent = fmtBRL(totR);
+    if (elD) elD.textContent = fmtBRL(totD);
+
+    // Lists only update if panel is open
+    if ((!only || only === 'receitas') && _sidePanelOpen.receitas) {
+      const list = $('panel-receitas-list');
+      if (list) list.innerHTML = receitas.length === 0
+        ? '<span class="panel-empty">Nenhuma receita neste mês</span>'
+        : receitas.map(t => `
+          <div class="panel-item">
+            <span class="panel-item-desc" title="${t.description}">${t.description}</span>
+            <span class="panel-item-amount income">+${fmtBRL(t.amount)}</span>
+          </div>`).join('');
+    }
+    if ((!only || only === 'despesas') && _sidePanelOpen.despesas) {
+      const list = $('panel-despesas-list');
+      if (list) list.innerHTML = despesas.length === 0
+        ? '<span class="panel-empty">Nenhuma despesa neste mês</span>'
+        : despesas.map(t => `
+          <div class="panel-item">
+            <span class="panel-item-desc" title="${t.description}">${t.description}</span>
+            <span class="panel-item-amount expense">-${fmtBRL(t.amount)}</span>
+          </div>`).join('');
+    }
+  } catch(e) { /* silencioso */ }
+}
 
 // ── Navigation ────────────────────────────────────────────────
 const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, history: renderHistory, users: renderUsers, report: renderReport };
@@ -714,7 +769,7 @@ async function saveNewTransaction() {
     const msg = is_fixed ? '🔄 Lançamento fixo criado!' : installments > 1 ? `${installments} parcelas lançadas!` : 'Lançamento adicionado!';
     toast(msg);
     paymentMethods = await api('GET', '/api/payment-methods').catch(() => paymentMethods);
-    renderTransactions();
+    renderTransactions(); loadSidebarPanels();
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -783,7 +838,7 @@ async function deleteTransaction(id, groupId, recurringId) {
   try {
     await api('DELETE', url);
     toast(recurringId && url.includes('all_recurring') ? '🔄 Fixo cancelado e futuros removidos!' : '🗑️ Removido!');
-    renderTransactions();
+    renderTransactions(); loadSidebarPanels();
   } catch(e) { toast(e.message, 'error'); }
 }
 
