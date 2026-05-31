@@ -518,8 +518,11 @@ function onPtypeChange() {
   if (!instField) return;
   const pm = sel.startsWith('card-') ? paymentMethods.find(p => p.id === parseInt(sel.split('-')[1])) : null;
   const isCredit = pm?.type === 'credito';
-  instField.classList.toggle('hidden', !isCredit);
-  modeField?.classList.toggle('hidden', !isCredit);
+  const isReceita = $('tx-type')?.value === 'Receita';
+  if (!isReceita) {
+    instField.classList.toggle('hidden', !isCredit);
+    modeField?.classList.toggle('hidden', !isCredit);
+  }
 
   // Auto-set competence month: credit card → next month by default
   const compInput = $('tx-competence');
@@ -551,8 +554,25 @@ function setType(type) {
   const incomeField = $('field-income-source');
   if (incomeField) incomeField.classList.toggle('hidden', type !== 'Receita');
   const instField = $('field-installments');
-  if (instField && type === 'Receita') instField.classList.add('hidden');
-  $('field-installment-amount-mode')?.classList.toggle('hidden', type === 'Receita');
+  if (instField && type === 'Receita') {
+    instField.classList.remove('hidden');
+    const lbl = instField.querySelector('label');
+    if (lbl) lbl.textContent = 'Receber em quantas parcelas?';
+    const modeField = $('field-installment-amount-mode');
+    if (modeField) {
+      modeField.classList.remove('hidden');
+      const sel = modeField.querySelector('select');
+      if (sel) sel.innerHTML = `<option value="total">Valor total a receber</option><option value="parcel">Valor de cada parcela</option>`;
+    }
+  }
+  // For Despesa, installments visibility is controlled by onPtypeChange (credit card logic)
+  if (type === 'Despesa') {
+    const lbl = instField?.querySelector('label');
+    if (lbl) lbl.textContent = 'Parcelas';
+    const sel = $('field-installment-amount-mode')?.querySelector('select');
+    if (sel) sel.innerHTML = `<option value="total">Valor total da compra</option><option value="parcel">Valor de cada parcela</option>`;
+    onPtypeChange();
+  }
 }
 
 function onFixedChange() {
