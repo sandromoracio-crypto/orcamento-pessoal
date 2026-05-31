@@ -95,10 +95,11 @@
     <header class="topbar">
       <button class="menu-btn" onclick="toggleSidebar()">☰</button>
       <h2 id="page-title">Dashboard</h2>
-      <div class="month-selector">
-        <button onclick="changeMonth(-1)">‹</button>
-        <span id="month-display">Mai 2025</span>
-        <button onclick="changeMonth(1)">›</button>
+      <div class="month-selector" id="month-selector">
+        <button onclick="changeMonth(-1)" title="Mês anterior">‹</button>
+        <span id="month-display" onclick="toggleMonthPicker()" title="Selecionar competência">Mai 2025 ▾</span>
+        <button onclick="changeMonth(1)" title="Próximo mês">›</button>
+        <div id="month-picker" class="month-picker hidden"></div>
       </div>
     </header>
 

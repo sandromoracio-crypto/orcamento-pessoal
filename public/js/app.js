@@ -132,7 +132,7 @@ async function bootApp() {
 
 // ── Month navigation ─────────────────────────────────────────
 function updateMonthDisplay() {
-  $('month-display').textContent = monthLabel(currentMonth);
+  $('month-display').textContent = monthLabel(currentMonth) + ' ▾';
 }
 
 function changeMonth(dir) {
@@ -143,6 +143,60 @@ function changeMonth(dir) {
   const active = document.querySelector('.nav-item.active');
   if (active) navigate(active.dataset.page || 'dashboard');
 }
+
+function toggleMonthPicker() {
+  const picker = $('month-picker');
+  if (!picker.classList.contains('hidden')) {
+    picker.classList.add('hidden');
+    return;
+  }
+  renderMonthPicker();
+  picker.classList.remove('hidden');
+}
+
+function renderMonthPicker() {
+  const picker = $('month-picker');
+  const now = new Date();
+  const [cy, cm] = currentMonth.split('-').map(Number);
+
+  // Range: 3 years back to 1 year ahead
+  const startYear = now.getFullYear() - 3;
+  const endYear = now.getFullYear() + 1;
+
+  let html = '<div class="month-picker-header"><span>Selecionar competência</span></div>';
+
+  for (let year = endYear; year >= startYear; year--) {
+    html += `<div class="month-picker-year">${year}</div><div class="month-picker-grid">`;
+    for (let mo = 1; mo <= 12; mo++) {
+      const val = `${year}-${String(mo).padStart(2,'0')}`;
+      const isFuture = year > now.getFullYear() || (year === now.getFullYear() && mo > now.getMonth() + 1);
+      const isActive = year === cy && mo === cm;
+      html += `<button class="month-picker-btn${isActive ? ' active' : ''}${isFuture ? ' future' : ''}" onclick="selectMonth('${val}')">${MONTHS_PT[mo-1]}</button>`;
+    }
+    html += '</div>';
+  }
+
+  picker.innerHTML = html;
+  // Scroll to active month
+  setTimeout(() => {
+    const active = picker.querySelector('.active');
+    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 50);
+}
+
+function selectMonth(val) {
+  currentMonth = val;
+  updateMonthDisplay();
+  $('month-picker').classList.add('hidden');
+  const active = document.querySelector('.nav-item.active');
+  if (active) navigate(active.dataset.page || 'dashboard');
+}
+
+// Close picker when clicking outside
+document.addEventListener('click', e => {
+  const sel = $('month-selector');
+  if (sel && !sel.contains(e.target)) $('month-picker')?.classList.add('hidden');
+});
 
 // ── Navigation ────────────────────────────────────────────────
 const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, history: renderHistory, users: renderUsers, report: renderReport };
