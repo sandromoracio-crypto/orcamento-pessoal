@@ -672,6 +672,15 @@ function txFormHTML(t) {
         <input type="checkbox" id="tx-edit-all-installments">
         <label for="tx-edit-all-installments">Editar todas as parcelas deste lançamento</label>
       </div>` : ''}
+      ${isEdit && !d.recurring_template_id && !d.group_id ? `
+      <div class="fixed-check-row" style="border-top:1px solid var(--gray-200);padding-top:.75rem;margin-top:.25rem">
+        <input type="checkbox" id="tx-convert-fixed">
+        <label for="tx-convert-fixed">🔄 Converter para lançamento fixo (replica todo mês automaticamente)</label>
+      </div>` : ''}
+      ${isEdit && d.recurring_template_id ? `
+      <div style="padding:.5rem .75rem;background:#e8f5e9;border-radius:8px;font-size:.82rem;color:#2e7d32;margin-top:.25rem">
+        🔄 <strong>Lançamento fixo ativo</strong> — replica automaticamente todo mês.
+      </div>` : ''}
       ${!isEdit ? `
       <div class="fixed-check-row">
         <input type="checkbox" id="tx-fixed" onchange="onFixedChange()">
@@ -869,6 +878,12 @@ async function saveEditTransaction(id) {
       update_installments: $('tx-edit-all-installments')?.checked || false,
       competence_month: $('tx-competence')?.value || null
     });
+    // Converter para fixo se solicitado
+    if ($('tx-convert-fixed')?.checked) {
+      await api('POST', `/api/transactions/${id}/make-fixed`);
+      closeModal(); toast('🔄 Convertido para lançamento fixo!'); renderTransactions(); loadSidebarPanels();
+      return;
+    }
     closeModal(); toast('Atualizado!'); renderTransactions();
   } catch(e) { toast(e.message, 'error'); }
 }

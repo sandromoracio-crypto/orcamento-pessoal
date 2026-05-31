@@ -442,6 +442,21 @@ app.post('/api/transactions', auth, async (req,res) => {
   res.json({ids,installments:nInst,group_id:groupId});
 });
 
+// Converte um lançamento avulso em fixo (recorrente)
+app.post('/api/transactions/:id/make-fixed', auth, async (req,res) => {
+  const t = await dbGet('SELECT * FROM transactions WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
+  if (!t) return res.status(404).json({error:'Não encontrado'});
+  if (t.recurring_template_id) return res.status(400).json({error:'Já é um lançamento fixo'});
+  const startMonth = (t.competence_month || t.date.slice(0,7));
+  const tmpl = await dbInsert(
+    'INSERT INTO recurring_templates (user_id,description,category,type,amount,note,payment_type,payment_method_id,start_month) VALUES (?,?,?,?,?,?,?,?,?)',
+    [req.user.id, t.description, t.category, t.type, t.amount, t.note||'', t.payment_type||'dinheiro', t.payment_method_id||null, startMonth]
+  );
+  const templateId = tmpl.lastInsertRowid;
+  await dbRun('UPDATE transactions SET recurring_template_id=? WHERE id=?',[templateId, t.id]);
+  res.json({ok:true, template_id: templateId});
+});
+
 app.put('/api/transactions/:id', auth, async (req,res) => {
   const t=await dbGet('SELECT * FROM transactions WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
   if (!t) return res.status(404).json({error:'Não encontrado'});
