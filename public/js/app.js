@@ -14,6 +14,8 @@ let savingsAccounts = []; // cached list
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const fmtBRL = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const applyTxFiltersDebounced = debounce(() => applyTxFilters(), 250);
 const fmtPct = v => ((v||0)*100).toFixed(1) + '%';
 const fmtDate = s => s ? s.split('-').reverse().join('/') : '';
 const monthLabel = m => { const [y,mo] = m.split('-'); return MONTHS_PT[parseInt(mo)-1] + ' ' + y; };
@@ -272,7 +274,10 @@ function toggleSidePanel(type) {
 async function loadSidebarPanels(only) {
   if (!token) return;
   try {
-    const txs = await api('GET', `/api/transactions?month=${currentMonth}`);
+    // Reutiliza cache da página de lançamentos se for do mesmo mês
+    const txs = (_allTxs.length && document.querySelector('.nav-item.active')?.dataset?.page === 'transactions')
+      ? _allTxs
+      : await api('GET', `/api/transactions?month=${currentMonth}`);
     const receitas = txs.filter(t => t.type === 'Receita');
     const despesas = txs.filter(t => t.type === 'Despesa');
 
@@ -496,7 +501,7 @@ async function renderTransactions() {
 
       <!-- Filtros -->
       <div class="tx-filters" id="tx-filters">
-        <input type="search" id="f-search" placeholder="🔍 Buscar descrição..." oninput="applyTxFilters()" class="f-input">
+        <input type="search" id="f-search" placeholder="🔍 Buscar descrição..." oninput="applyTxFiltersDebounced()" class="f-input">
         <select id="f-type" onchange="applyTxFilters()" class="f-select">
           <option value="">Tipo: Todos</option>
           <option value="Receita">💚 Receita</option>
@@ -804,8 +809,8 @@ function openAddTransaction() {
 }
 
 async function openEditTransaction(id) {
-  const txs = await api('GET', `/api/transactions`);
-  const t = txs.find(x => x.id === id);
+  // Usa cache da página atual; caso contrário busca somente este ID
+  const t = _allTxs.find(x => x.id === id) || await api('GET', `/api/transactions/${id}`);
   if (t) {
     openModal('Editar Lançamento', txFormHTML(t));
     setType(t.type || 'Despesa');
@@ -863,9 +868,8 @@ async function saveEditTransaction(id) {
       payment_type = 'receita';
       payment_method_id = $('tx-income-source')?.value || null;
     }
-    // Check if it's a recurring transaction (template_id set)
-    const txs = await api('GET', `/api/transactions`);
-    const tx = txs.find(t => t.id === id);
+    // Check if it's a recurring transaction — usa cache ou busca individual
+    const tx = _allTxs.find(t => t.id === id) || await api('GET', `/api/transactions/${id}`);
     let update_future = false;
     if (tx?.recurring_template_id) {
       update_future = confirm('Este é um lançamento fixo.\n\nOK = atualizar este mês e todos os futuros\nCancelar = atualizar só este mês');
@@ -1400,8 +1404,10 @@ window.openDepositFromTransactions = async function() {
 };
 
 // ── Goals ─────────────────────────────────────────────────────
+let _allGoals = [];
 async function renderGoals() {
-  const goals = await api('GET', '/api/goals');
+  _allGoals = await api('GET', '/api/goals');
+  const goals = _allGoals;
 
   const cards = goals.length === 0
     ? '<div class="empty-state"><div class="empty-icon">🎯</div><p>Nenhuma meta criada ainda.</p><br><button class="btn-primary" onclick="openAddGoal()">Criar primeira meta</button></div>'
@@ -1462,8 +1468,7 @@ function goalFormHTML(g) {
 function openAddGoal() { openModal('Nova Meta', goalFormHTML(null)); }
 
 async function openEditGoal(id) {
-  const goals = await api('GET', '/api/goals');
-  const g = goals.find(x => x.id === id);
+  const g = _allGoals.find(x => x.id === id) || (await api('GET', '/api/goals')).find(x => x.id === id);
   if (g) openModal('Editar Meta', goalFormHTML(g));
 }
 

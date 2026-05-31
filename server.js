@@ -6,6 +6,10 @@ import { join, dirname, resolve as pathResolve } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 
+// Compressão gzip/brotli — importado dinamicamente para não quebrar se ausente
+let compression;
+try { ({ default: compression } = await import('compression')); } catch { compression = null; }
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -146,6 +150,21 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
+
+// ── Índices para acelerar queries frequentes ──────────────────
+const INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_tx_user_month      ON transactions(user_id, competence_month, date)',
+  'CREATE INDEX IF NOT EXISTS idx_tx_user_pm         ON transactions(user_id, payment_method_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tx_recurring       ON transactions(recurring_template_id, user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tx_group           ON transactions(group_id)',
+  'CREATE INDEX IF NOT EXISTS idx_pm_user            ON payment_methods(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_savings_user       ON savings_accounts(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_deposits_account   ON savings_deposits(account_id, user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skips_template     ON recurring_skips(user_id, recurring_template_id, skip_month)',
+  'CREATE INDEX IF NOT EXISTS idx_reset_token        ON password_reset_tokens(token)',
+];
+for (const idx of INDEXES) { try { await dbExec(idx); } catch { /* já existe */ } }
+
 if (USE_PG) {
   await dbExec(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INT NOT NULL DEFAULT 0;
@@ -210,8 +229,13 @@ async function ensureRecurring(userId, month) {
 
 // ── Middleware ────────────────────────────────────────────────
 app.use(cors());
+if (compression) app.use(compression()); // gzip todas as respostas
 app.use(express.json());
-app.use(express.static(join(__dirname, 'public')));
+// Cache longo para assets estáticos com hash (vendor/css/js)
+app.use('/css',    express.static(join(__dirname,'public','css'),    { maxAge:'7d', etag:true }));
+app.use('/js',     express.static(join(__dirname,'public','js'),     { maxAge:'1d', etag:true }));
+app.use('/vendor', express.static(join(__dirname,'public','vendor'), { maxAge:'30d', etag:true }));
+app.use(express.static(join(__dirname, 'public'), { etag:true }));
 
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -388,6 +412,16 @@ app.get('/api/payment-methods/totals', auth, async (req,res) => {
 });
 
 // ── Transactions ──────────────────────────────────────────────
+// Busca uma única transação por ID
+app.get('/api/transactions/:id', auth, async (req,res) => {
+  const sql = USE_PG
+    ? `SELECT t.*, pm.name as pm_name, pm.color as pm_color, pm.type as pm_type FROM transactions t LEFT JOIN payment_methods pm ON pm.id=t.payment_method_id WHERE t.id=$1 AND t.user_id=$2`
+    : `SELECT t.*, pm.name as pm_name, pm.color as pm_color, pm.type as pm_type FROM transactions t LEFT JOIN payment_methods pm ON pm.id=t.payment_method_id WHERE t.id=? AND t.user_id=?`;
+  const row = await dbGet(sql, [req.params.id, req.user.id]);
+  if (!row) return res.status(404).json({error:'Não encontrado'});
+  res.json(row);
+});
+
 app.get('/api/transactions', auth, async (req,res) => {
   const {month,payment_method_id}=req.query;
   if (month) await ensureRecurring(req.user.id,month);
@@ -587,12 +621,31 @@ app.delete('/api/recurring/:id', auth, async (req,res) => {
 
 // ── Savings ───────────────────────────────────────────────────
 app.get('/api/savings', auth, async (req,res) => {
-  const accounts=await dbAll('SELECT * FROM savings_accounts WHERE user_id=? ORDER BY name',[req.user.id]);
-  const result=await Promise.all(accounts.map(async acc => {
-    const bal=await dbGet('SELECT COALESCE(SUM(amount),0) as total FROM savings_deposits WHERE account_id=? AND user_id=?',[acc.id,req.user.id]);
-    const last=await dbGet('SELECT date,amount FROM savings_deposits WHERE account_id=? AND user_id=? ORDER BY date DESC LIMIT 1',[acc.id,req.user.id]);
-    return {...acc,balance:parseFloat(bal?.total||0),last_deposit:last};
-  }));
+  const accounts = await dbAll('SELECT * FROM savings_accounts WHERE user_id=? ORDER BY name',[req.user.id]);
+  if (!accounts.length) return res.json([]);
+  // Uma única query agrega saldo e último depósito — sem N+1
+  const ids = accounts.map((_,i) => USE_PG ? `$${i+2}` : '?').join(',');
+  const aggSql = USE_PG
+    ? `SELECT account_id,
+              COALESCE(SUM(amount),0) as total,
+              MAX(date) as last_date,
+              (array_agg(amount ORDER BY date DESC))[1] as last_amount
+       FROM savings_deposits WHERE user_id=$1 AND account_id IN (${ids}) GROUP BY account_id`
+    : `SELECT account_id,
+              COALESCE(SUM(amount),0) as total,
+              MAX(date) as last_date,
+              (SELECT amount FROM savings_deposits sd2 WHERE sd2.account_id=sd.account_id ORDER BY sd2.date DESC LIMIT 1) as last_amount
+       FROM savings_deposits sd WHERE user_id=? AND account_id IN (${ids}) GROUP BY account_id`;
+  const rows = await dbAll(aggSql, [req.user.id, ...accounts.map(a=>a.id)]);
+  const map  = Object.fromEntries(rows.map(r=>[r.account_id, r]));
+  const result = accounts.map(acc => {
+    const agg = map[acc.id];
+    return {
+      ...acc,
+      balance: parseFloat(agg?.total||0),
+      last_deposit: agg?.last_date ? { date: agg.last_date, amount: agg.last_amount } : null
+    };
+  });
   res.json(result);
 });
 app.post('/api/savings', auth, async (req,res) => {
