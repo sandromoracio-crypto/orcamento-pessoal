@@ -869,7 +869,7 @@ async function toggleCardDetails(id) {
     : txs.map(t => `
         <div class="deposit-row">
           <span class="dep-date">${fmtDate(t.date)}</span>
-          <span class="dep-note">${t.description}${t.installments>1?` (${t.installment_number}/${t.installments})`:''}</span>
+          <span class="dep-note">${t.description}</span>
           <span class="dep-amount" style="color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${t.type==='Receita'?'+':'-'}${fmtBRL(t.amount)}</span>
         </div>`).join('');
   el.classList.remove('hidden');
