@@ -2,92 +2,122 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
-import { join, dirname } from 'path';
+import { join, dirname, resolve as pathResolve } from 'path';
 import { fileURLToPath } from 'url';
-import pg from 'pg';
+import { mkdirSync } from 'fs';
 
-const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'orcamento-secret-key-mude-em-producao';
+const USE_PG = !!process.env.DATABASE_URL;
 
-// ── PostgreSQL ────────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
-});
+// ── Database adapter: PostgreSQL (produção) ou SQLite (local) ─
+let pool, sqlite;
 
-// ? → $1,$2... converter
-function pq(sql) { let i=0; return sql.replace(/\?/g, ()=>`$${++i}`); }
+if (USE_PG) {
+  const { default: pg } = await import('pg');
+  pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+  console.log('🐘 Usando PostgreSQL');
+} else {
+  const { DatabaseSync } = await import('node:sqlite');
+  const DB_DIR  = process.env.DB_PATH ? dirname(process.env.DB_PATH) : __dirname;
+  const DB_FILE = process.env.DB_PATH || join(__dirname, 'orcamento.db');
+  try { mkdirSync(DB_DIR, { recursive: true }); } catch {}
+  sqlite = new DatabaseSync(DB_FILE);
+  sqlite.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+  console.log(`🗄️  Usando SQLite: ${DB_FILE}`);
+}
 
-const dbGet    = (sql,p=[]) => pool.query(pq(sql),p).then(r=>r.rows[0]||null);
-const dbAll    = (sql,p=[]) => pool.query(pq(sql),p).then(r=>r.rows);
-const dbRun    = (sql,p=[]) => pool.query(pq(sql),p);
-const dbInsert = async (sql,p=[]) => {
-  const s = pq(sql);
-  const r = await pool.query(s.includes('RETURNING')?s:s+' RETURNING id', p);
-  return { lastInsertRowid: r.rows[0]?.id };
+// ? → $1,$2... (só para PostgreSQL)
+function pq(sql) { let i=0; return USE_PG ? sql.replace(/\?/g, ()=>`$${++i}`) : sql; }
+
+// Unified DB helpers
+async function dbGet(sql, p=[]) {
+  if (USE_PG) { const r=await pool.query(pq(sql),p); return r.rows[0]||null; }
+  return sqlite.prepare(sql).get(...p) || null;
+}
+async function dbAll(sql, p=[]) {
+  if (USE_PG) { const r=await pool.query(pq(sql),p); return r.rows; }
+  return sqlite.prepare(sql).all(...p);
+}
+async function dbRun(sql, p=[]) {
+  if (USE_PG) return pool.query(pq(sql),p);
+  return sqlite.prepare(sql).run(...p);
+}
+async function dbInsert(sql, p=[]) {
+  if (USE_PG) {
+    const s=pq(sql);
+    const r=await pool.query(s.includes('RETURNING')?s:s+' RETURNING id',p);
+    return { lastInsertRowid: r.rows[0]?.id };
+  }
+  const r=sqlite.prepare(sql).run(...p);
+  return { lastInsertRowid: r.lastInsertRowid };
+}
+async function dbExec(sql) {
+  if (USE_PG) {
+    const stmts=sql.split(';').map(s=>s.trim()).filter(Boolean);
+    for (const s of stmts) { try { await pool.query(s); } catch(e) { if(!e.message.includes('already exists')) throw e; } }
+  } else {
+    sqlite.exec(sql);
+  }
+}
+// Raw query for dynamic SQL (PostgreSQL) or fallback to dbAll (SQLite with ? params)
+async function rawQuery(sql, p=[]) {
+  if (USE_PG) { const r=await pool.query(sql,p); return r.rows; }
+  // For SQLite: sql already has ? placeholders
+  return sqlite.prepare(sql).all(...p);
+}
+async function rawRun(sql, p=[]) {
+  if (USE_PG) return pool.query(sql,p);
+  return sqlite.prepare(sql).run(...p);
+}
+
+// ── effective month expression (adapts to DB engine) ─────────
+const effMonth = (alias='') => {
+  const f = alias ? alias+'.' : '';
+  return USE_PG
+    ? `COALESCE(${f}competence_month, to_char(${f}date::date,'YYYY-MM'))`
+    : `COALESCE(${f}competence_month, strftime('%Y-%m',${f}date))`;
 };
 
 // ── Schema ────────────────────────────────────────────────────
-const TABLES = [`
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY, name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`,`
-  CREATE TABLE IF NOT EXISTS payment_methods (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'credito',
-    color TEXT NOT NULL DEFAULT '#2e7d32',
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'),
-    UNIQUE(user_id,name))`,`
-  CREATE TABLE IF NOT EXISTS recurring_templates (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL,
-    amount REAL NOT NULL, note TEXT DEFAULT '', payment_type TEXT DEFAULT 'dinheiro',
-    payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL,
-    active INT NOT NULL DEFAULT 1, start_month TEXT NOT NULL,
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`,`
-  CREATE TABLE IF NOT EXISTS transactions (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    date TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL,
-    type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '',
-    payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL,
-    payment_type TEXT DEFAULT 'dinheiro', installments INT DEFAULT 1,
-    installment_number INT DEFAULT 1, group_id TEXT,
-    recurring_template_id INT REFERENCES recurring_templates(id) ON DELETE SET NULL,
-    competence_month TEXT,
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`,`
-  CREATE TABLE IF NOT EXISTS category_limits (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    category TEXT NOT NULL, limit_amount REAL NOT NULL DEFAULT 0,
-    UNIQUE(user_id,category))`,`
-  CREATE TABLE IF NOT EXISTS goals (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL, description TEXT DEFAULT '', target_amount REAL NOT NULL,
-    saved_amount REAL NOT NULL DEFAULT 0, deadline TEXT,
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`,`
-  CREATE TABLE IF NOT EXISTS savings_accounts (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL, description TEXT DEFAULT '', color TEXT NOT NULL DEFAULT '#1b5e20',
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'),
-    UNIQUE(user_id,name))`,`
-  CREATE TABLE IF NOT EXISTS savings_deposits (
-    id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE,
-    amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '',
-    transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL,
-    created_at TEXT DEFAULT to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`
-];
-for (const t of TABLES) await pool.query(t);
-console.log('✅ Schema pronto');
+const idType  = USE_PG ? 'SERIAL'  : 'INTEGER';
+const idExtra = USE_PG ? ''        : ' AUTOINCREMENT';
+const nowExpr = USE_PG ? "to_char(now(),'YYYY-MM-DD HH24:MI:SS')" : "(datetime('now'))";
 
-// effective month helper (SQLite → PostgreSQL)
-const effMonth = (alias='') => {
-  const t = alias ? alias+'.' : '';
-  return `COALESCE(${t}competence_month, to_char(${t}date::date,'YYYY-MM'))`;
-};
+const TABLES = [
+  `CREATE TABLE IF NOT EXISTS users (id ${idType} PRIMARY KEY${idExtra}, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS payment_methods (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'credito', color TEXT NOT NULL DEFAULT '#2e7d32', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
+  `CREATE TABLE IF NOT EXISTS recurring_templates (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '', payment_type TEXT DEFAULT 'dinheiro', payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL, active INT NOT NULL DEFAULT 1, start_month TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS transactions (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, date TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '', payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL, payment_type TEXT DEFAULT 'dinheiro', installments INT DEFAULT 1, installment_number INT DEFAULT 1, group_id TEXT, recurring_template_id INT REFERENCES recurring_templates(id) ON DELETE SET NULL, competence_month TEXT, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS category_limits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, category TEXT NOT NULL, limit_amount REAL NOT NULL DEFAULT 0, UNIQUE(user_id,category))`,
+  `CREATE TABLE IF NOT EXISTS goals (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', target_amount REAL NOT NULL, saved_amount REAL NOT NULL DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS savings_accounts (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', color TEXT NOT NULL DEFAULT '#1b5e20', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
+  `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`
+];
+for (const t of TABLES) await dbExec(t);
+
+// SQLite migrations for existing databases
+if (!USE_PG) {
+  const existingCols = sqlite.prepare("PRAGMA table_info(transactions)").all().map(c=>c.name);
+  const migrations = [
+    ['payment_method_id',    'ALTER TABLE transactions ADD COLUMN payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL'],
+    ['payment_type',         'ALTER TABLE transactions ADD COLUMN payment_type TEXT DEFAULT "dinheiro"'],
+    ['installments',         'ALTER TABLE transactions ADD COLUMN installments INT DEFAULT 1'],
+    ['installment_number',   'ALTER TABLE transactions ADD COLUMN installment_number INT DEFAULT 1'],
+    ['group_id',             'ALTER TABLE transactions ADD COLUMN group_id TEXT'],
+    ['recurring_template_id','ALTER TABLE transactions ADD COLUMN recurring_template_id INT REFERENCES recurring_templates(id) ON DELETE SET NULL'],
+    ['competence_month',     'ALTER TABLE transactions ADD COLUMN competence_month TEXT'],
+  ];
+  for (const [col,sql] of migrations) {
+    if (!existingCols.includes(col)) { sqlite.exec(sql); console.log(`Migration: +${col}`); }
+  }
+}
+console.log('✅ Schema pronto');
 
 // ── Recurring helper ──────────────────────────────────────────
 async function ensureRecurring(userId, month) {
@@ -97,7 +127,7 @@ async function ensureRecurring(userId, month) {
   );
   for (const t of templates) {
     const ex = await dbGet(
-      `SELECT id FROM transactions WHERE user_id=? AND recurring_template_id=? AND to_char(date::date,'YYYY-MM')=?`,
+      `SELECT id FROM transactions WHERE user_id=? AND recurring_template_id=? AND ${effMonth()}=?`,
       [userId, t.id, month]
     );
     if (!ex) await dbInsert(
@@ -179,35 +209,33 @@ app.delete('/api/payment-methods/:id', auth, async (req,res) => {
 });
 app.get('/api/payment-methods/totals', auth, async (req,res) => {
   const {month}=req.query;
-  const p=[req.user.id, month||null];
-  const rows=await pool.query(`
-    SELECT pm.id,pm.name,pm.type,pm.color,
-           COALESCE(SUM(t.amount),0) as total, COUNT(t.id) as count
-    FROM payment_methods pm
-    LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='Despesa'
-      AND ($2::text IS NULL OR ${effMonth('t')}=$2)
-    WHERE pm.user_id=$1
-    GROUP BY pm.id ORDER BY total DESC
-  `,p);
-  res.json(rows.rows);
+  if (USE_PG) {
+    const p=[req.user.id, month||null];
+    const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='Despesa' AND ($2::text IS NULL OR ${effMonth('t')}=$2) WHERE pm.user_id=$1 GROUP BY pm.id ORDER BY total DESC`,p);
+    return res.json(rows);
+  }
+  // SQLite
+  const mf = month ? `AND ${effMonth('t')}='${month}'` : '';
+  const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='Despesa' ${mf} WHERE pm.user_id=? GROUP BY pm.id ORDER BY total DESC`,[req.user.id]);
+  res.json(rows);
 });
 
 // ── Transactions ──────────────────────────────────────────────
 app.get('/api/transactions', auth, async (req,res) => {
   const {month,payment_method_id}=req.query;
   if (month) await ensureRecurring(req.user.id,month);
-  const p=[req.user.id, month||null, payment_method_id||null];
-  const rows=await pool.query(`
-    SELECT t.*, pm.name as pm_name, pm.color as pm_color, pm.type as pm_type,
-           ${effMonth('t')} as effective_month
-    FROM transactions t
-    LEFT JOIN payment_methods pm ON pm.id=t.payment_method_id
-    WHERE t.user_id=$1
-      AND ($2::text IS NULL OR ${effMonth('t')}=$2)
-      AND ($3::int IS NULL OR t.payment_method_id=$3)
-    ORDER BY t.date DESC, t.id DESC
-  `,p);
-  res.json(rows.rows);
+  if (USE_PG) {
+    const p=[req.user.id, month||null, payment_method_id ? parseInt(payment_method_id) : null];
+    const rows=await rawQuery(`SELECT t.*, pm.name as pm_name, pm.color as pm_color, pm.type as pm_type, ${effMonth('t')} as effective_month FROM transactions t LEFT JOIN payment_methods pm ON pm.id=t.payment_method_id WHERE t.user_id=$1 AND ($2::text IS NULL OR ${effMonth('t')}=$2) AND ($3::int IS NULL OR t.payment_method_id=$3) ORDER BY t.date DESC, t.id DESC`,p);
+    return res.json(rows);
+  }
+  // SQLite
+  let sql=`SELECT t.*, pm.name as pm_name, pm.color as pm_color, pm.type as pm_type, ${effMonth('t')} as effective_month FROM transactions t LEFT JOIN payment_methods pm ON pm.id=t.payment_method_id WHERE t.user_id=?`;
+  const p=[req.user.id];
+  if (month) { sql+=` AND ${effMonth('t')}=?`; p.push(month); }
+  if (payment_method_id) { sql+=` AND t.payment_method_id=?`; p.push(parseInt(payment_method_id)); }
+  sql+=' ORDER BY t.date DESC, t.id DESC';
+  res.json(await rawQuery(sql,p));
 });
 
 app.post('/api/transactions', auth, async (req,res) => {
@@ -259,7 +287,7 @@ app.put('/api/transactions/:id', auth, async (req,res) => {
   if (t.recurring_template_id&&update_future) {
     await dbRun('UPDATE recurring_templates SET description=?,category=?,type=?,amount=?,note=?,payment_type=?,payment_method_id=? WHERE id=? AND user_id=?',
       [description,category,type,val,note||'',ptype,pmId,t.recurring_template_id,req.user.id]);
-    await pool.query(`UPDATE transactions SET description=$1,category=$2,type=$3,amount=$4,note=$5,payment_type=$6,payment_method_id=$7 WHERE recurring_template_id=$8 AND user_id=$9 AND ${effMonth()}>=$10`,
+    await dbRun(`UPDATE transactions SET description=?,category=?,type=?,amount=?,note=?,payment_type=?,payment_method_id=? WHERE recurring_template_id=? AND user_id=? AND ${effMonth()}>=?`,
       [description,category,type,val,note||'',ptype,pmId,t.recurring_template_id,req.user.id,month]);
   }
   res.json({ok:true});
@@ -268,26 +296,47 @@ app.put('/api/transactions/:id', auth, async (req,res) => {
 app.delete('/api/transactions/:id', auth, async (req,res) => {
   const t=await dbGet('SELECT * FROM transactions WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
   if (!t) return res.status(404).json({error:'Não encontrado'});
-  if (req.query.all_installments==='1'&&t.group_id)
+
+  // Excluir todas as parcelas (parcelado)
+  if (req.query.all_installments==='1' && t.group_id) {
     await dbRun('DELETE FROM transactions WHERE group_id=? AND user_id=?',[t.group_id,req.user.id]);
-  else await dbRun('DELETE FROM transactions WHERE id=?',[req.params.id]);
+    return res.json({ok:true});
+  }
+
+  // Cancelar fixo: desativa template + exclui este e todos os futuros
+  if (req.query.all_recurring==='1' && t.recurring_template_id) {
+    const curMonth = (t.competence_month || t.date.slice(0,7));
+    // Desativa o template para não gerar mais instâncias
+    await dbRun('UPDATE recurring_templates SET active=0 WHERE id=? AND user_id=?',
+      [t.recurring_template_id, req.user.id]);
+    // Exclui este mês e todos os meses futuros
+    await dbRun(
+      `DELETE FROM transactions WHERE recurring_template_id=? AND user_id=? AND ${effMonth()}>=?`,
+      [t.recurring_template_id, req.user.id, curMonth]
+    );
+    return res.json({ok:true, cancelled_from: curMonth});
+  }
+
+  // Excluir só este lançamento
+  await dbRun('DELETE FROM transactions WHERE id=?',[req.params.id]);
   res.json({ok:true});
 });
 
 // ── Summary ───────────────────────────────────────────────────
 app.get('/api/summary', auth, async (req,res) => {
   const {month}=req.query;
-  const p=[req.user.id, month||null];
-  const mf=`AND ($2::text IS NULL OR ${effMonth()}=$2)`;
-  const [ir,er,cr,lr,mr]=await Promise.all([
-    pool.query(`SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE user_id=$1 AND type='Receita' ${mf}`,p),
-    pool.query(`SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE user_id=$1 AND type='Despesa' ${mf}`,p),
-    pool.query(`SELECT category,SUM(amount) as total FROM transactions WHERE user_id=$1 AND type='Despesa' ${mf} GROUP BY category ORDER BY total DESC`,p),
-    pool.query('SELECT category,limit_amount FROM category_limits WHERE user_id=$1',[req.user.id]),
-    pool.query(`SELECT ${effMonth()} as month,SUM(CASE WHEN type='Receita' THEN amount ELSE 0 END) as income,SUM(CASE WHEN type='Despesa' THEN amount ELSE 0 END) as expense FROM transactions WHERE user_id=$1 GROUP BY 1 ORDER BY 1 DESC LIMIT 12`,[req.user.id])
+  const mf  = month ? `AND ${effMonth()}=?` : '';
+  const p   = month ? [req.user.id, month] : [req.user.id];
+  const p1  = [req.user.id];
+  const [income, expense, byCategory, limits, monthly] = await Promise.all([
+    dbGet(`SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE user_id=? AND type='Receita' ${mf}`,p),
+    dbGet(`SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE user_id=? AND type='Despesa' ${mf}`,p),
+    dbAll(`SELECT category,SUM(amount) as total FROM transactions WHERE user_id=? AND type='Despesa' ${mf} GROUP BY category ORDER BY total DESC`,p),
+    dbAll('SELECT category,limit_amount FROM category_limits WHERE user_id=?',p1),
+    dbAll(`SELECT ${effMonth()} as month,SUM(CASE WHEN type='Receita' THEN amount ELSE 0 END) as income,SUM(CASE WHEN type='Despesa' THEN amount ELSE 0 END) as expense FROM transactions WHERE user_id=? GROUP BY 1 ORDER BY 1 DESC LIMIT 12`,p1)
   ]);
-  const income=parseFloat(ir.rows[0]?.total||0), expense=parseFloat(er.rows[0]?.total||0);
-  res.json({income,expense,balance:income-expense,byCategory:cr.rows,limits:lr.rows,monthly:mr.rows});
+  const inc=parseFloat(income?.total||0), exp=parseFloat(expense?.total||0);
+  res.json({income:inc,expense:exp,balance:inc-exp,byCategory,limits,monthly});
 });
 
 // ── Limits ────────────────────────────────────────────────────
@@ -295,7 +344,7 @@ app.get('/api/limits', auth, async (req,res) =>
   res.json(await dbAll('SELECT * FROM category_limits WHERE user_id=? ORDER BY category',[req.user.id])));
 app.put('/api/limits', auth, async (req,res) => {
   const {category,limit_amount}=req.body||{};
-  await dbRun('INSERT INTO category_limits (user_id,category,limit_amount) VALUES (?,?,?) ON CONFLICT(user_id,category) DO UPDATE SET limit_amount=EXCLUDED.limit_amount',
+  await dbRun('INSERT INTO category_limits (user_id,category,limit_amount) VALUES (?,?,?) ON CONFLICT(user_id,category) DO UPDATE SET limit_amount=excluded.limit_amount',
     [req.user.id,category,parseFloat(limit_amount)]);
   res.json({ok:true});
 });

@@ -307,7 +307,7 @@ async function renderTransactions() {
               <td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td>
               <td style="white-space:nowrap">
                 <button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button>
-                <button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}')">🗑️</button>
+                <button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button>
               </td>
             </tr>`).join('')}
         </tbody>
@@ -533,19 +533,86 @@ async function saveEditTransaction(id) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function deleteTransaction(id, groupId) {
-  const hasGroup = !!groupId;
-  let deleteAll = false;
-  if (hasGroup) {
-    const choice = confirm('Este lançamento é parcelado.\n\nOK = excluir TODAS as parcelas\nCancelar = excluir só esta parcela');
-    deleteAll = choice;
+async function deleteTransaction(id, groupId, recurringId) {
+  let url = `/api/transactions/${id}`;
+
+  // ── Lançamento FIXO ──────────────────────────────────────────
+  if (recurringId) {
+    const choice = await showChoiceModal(
+      '🔄 Cancelar Lançamento Fixo',
+      'O que deseja fazer com este lançamento recorrente?',
+      [
+        { label: '❌ Cancelar o fixo — excluir este e todos os futuros', value: 'all',    bg: '#c62828' },
+        { label: '🗑️ Excluir só este mês (manter fixo ativo)',          value: 'one',    bg: '#e65100' },
+        { label: '↩️ Não fazer nada',                                    value: 'cancel', bg: '#9e9e9e' },
+      ]
+    );
+    if (!choice || choice === 'cancel') return;
+    if (choice === 'all') url += '?all_recurring=1';
+
+  // ── Lançamento PARCELADO ─────────────────────────────────────
+  } else if (groupId) {
+    const choice = await showChoiceModal(
+      '💳 Excluir Parcela',
+      'O que deseja excluir?',
+      [
+        { label: '🗑️ Excluir TODAS as parcelas restantes', value: 'all',    bg: '#c62828' },
+        { label: '🗑️ Excluir só esta parcela',             value: 'one',    bg: '#e65100' },
+        { label: '↩️ Cancelar',                             value: 'cancel', bg: '#9e9e9e' },
+      ]
+    );
+    if (!choice || choice === 'cancel') return;
+    if (choice === 'all') url += '?all_installments=1';
+
+  // ── Lançamento SIMPLES ───────────────────────────────────────
   } else {
     if (!confirm('Remover este lançamento?')) return;
   }
+
   try {
-    await api('DELETE', `/api/transactions/${id}${deleteAll ? '?all_installments=1' : ''}`);
-    toast('Removido!'); renderTransactions();
+    await api('DELETE', url);
+    toast(recurringId && url.includes('all_recurring') ? '🔄 Fixo cancelado e futuros removidos!' : '🗑️ Removido!');
+    renderTransactions();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+// Modal de escolha com múltiplos botões
+function showChoiceModal(title, message, options) {
+  return new Promise(resolve => {
+    const btns = options.map(o =>
+      `<button class="_choice-btn" data-val="${o.val || o.value}"
+         style="width:100%;padding:.8rem 1rem;margin-bottom:.5rem;border:none;border-radius:8px;
+                cursor:pointer;font-weight:600;font-size:.9rem;color:#fff;background:${o.bg};
+                text-align:left;transition:opacity .15s"
+         onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        ${o.label}
+      </button>`
+    ).join('');
+
+    $('modal-title').textContent = title;
+    $('modal-body').innerHTML = `
+      <div style="padding:.75rem 0 .25rem">
+        <p style="color:var(--gray-700);margin-bottom:1.25rem;line-height:1.5">${message}</p>
+        ${btns}
+      </div>`;
+    $('modal-overlay').classList.remove('hidden');
+
+    // Bind button clicks
+    $('modal-body').querySelectorAll('._choice-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        $('modal-overlay').classList.add('hidden');
+        resolve(btn.dataset.val);
+      });
+    });
+
+    // Click outside = cancel
+    $('modal-overlay').onclick = (e) => {
+      if (e.target === $('modal-overlay')) {
+        $('modal-overlay').classList.add('hidden');
+        resolve('cancel');
+      }
+    };
+  });
 }
 
 // ── Categories ────────────────────────────────────────────────
