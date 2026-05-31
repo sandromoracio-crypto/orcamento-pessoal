@@ -90,9 +90,10 @@ const idExtra = USE_PG ? ''        : ' AUTOINCREMENT';
 const nowExpr = USE_PG ? "to_char(now(),'YYYY-MM-DD HH24:MI:SS')" : "(datetime('now'))";
 
 const TABLES = [
-  `CREATE TABLE IF NOT EXISTS users (id ${idType} PRIMARY KEY${idExtra}, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS users (id ${idType} PRIMARY KEY${idExtra}, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, is_admin INT NOT NULL DEFAULT 0, must_change_password INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS payment_methods (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'credito', color TEXT NOT NULL DEFAULT '#2e7d32', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
   `CREATE TABLE IF NOT EXISTS recurring_templates (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '', payment_type TEXT DEFAULT 'dinheiro', payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL, active INT NOT NULL DEFAULT 1, start_month TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS recurring_skips (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, recurring_template_id INT NOT NULL REFERENCES recurring_templates(id) ON DELETE CASCADE, skip_month TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,recurring_template_id,skip_month))`,
   `CREATE TABLE IF NOT EXISTS transactions (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, date TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '', payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL, payment_type TEXT DEFAULT 'dinheiro', installments INT DEFAULT 1, installment_number INT DEFAULT 1, group_id TEXT, recurring_template_id INT REFERENCES recurring_templates(id) ON DELETE SET NULL, competence_month TEXT, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS category_limits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, category TEXT NOT NULL, limit_amount REAL NOT NULL DEFAULT 0, UNIQUE(user_id,category))`,
   `CREATE TABLE IF NOT EXISTS goals (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', target_amount REAL NOT NULL, saved_amount REAL NOT NULL DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT ${nowExpr})`,
@@ -100,6 +101,12 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
+if (USE_PG) {
+  await dbExec(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INT NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password INT NOT NULL DEFAULT 0;
+  `);
+}
 
 // SQLite migrations for existing databases
 if (!USE_PG) {
@@ -116,6 +123,20 @@ if (!USE_PG) {
   for (const [col,sql] of migrations) {
     if (!existingCols.includes(col)) { sqlite.exec(sql); console.log(`Migration: +${col}`); }
   }
+  const userCols = sqlite.prepare("PRAGMA table_info(users)").all().map(c=>c.name);
+  const userMigrations = [
+    ['is_admin', 'ALTER TABLE users ADD COLUMN is_admin INT NOT NULL DEFAULT 0'],
+    ['must_change_password', 'ALTER TABLE users ADD COLUMN must_change_password INT NOT NULL DEFAULT 0'],
+  ];
+  for (const [col,sql] of userMigrations) {
+    if (!userCols.includes(col)) { sqlite.exec(sql); console.log(`Migration users: +${col}`); }
+  }
+}
+const adminCount = await dbGet('SELECT COUNT(*) as total FROM users WHERE is_admin=1');
+const userCount = await dbGet('SELECT COUNT(*) as total FROM users');
+if (parseInt(userCount?.total || 0) > 0 && parseInt(adminCount?.total || 0) === 0) {
+  const firstUser = await dbGet('SELECT id FROM users ORDER BY id LIMIT 1');
+  if (firstUser) await dbRun('UPDATE users SET is_admin=1 WHERE id=?',[firstUser.id]);
 }
 console.log('✅ Schema pronto');
 
@@ -126,6 +147,11 @@ async function ensureRecurring(userId, month) {
     [userId, month]
   );
   for (const t of templates) {
+    const skipped = await dbGet(
+      'SELECT id FROM recurring_skips WHERE user_id=? AND recurring_template_id=? AND skip_month=?',
+      [userId, t.id, month]
+    );
+    if (skipped) continue;
     const ex = await dbGet(
       `SELECT id FROM transactions WHERE user_id=? AND recurring_template_id=? AND ${effMonth()}=?`,
       [userId, t.id, month]
@@ -148,6 +174,14 @@ function auth(req, res, next) {
   try { req.user = jwt.verify(token, JWT_SECRET); next(); }
   catch { res.status(401).json({ error:'Token inválido' }); }
 }
+async function requireAdmin(req, res, next) {
+  const user = await dbGet('SELECT is_admin FROM users WHERE id=?',[req.user.id]);
+  if (!user?.is_admin) return res.status(403).json({error:'Acesso restrito ao administrador'});
+  next();
+}
+function tempPassword() {
+  return Math.random().toString(36).slice(2, 6).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+}
 
 // ── Auth ──────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
@@ -156,14 +190,16 @@ app.post('/api/register', async (req, res) => {
   if (password.length<6) return res.status(400).json({ error:'Senha mínima: 6 caracteres' });
   try {
     const hash = bcrypt.hashSync(password,10);
-    const r = await dbInsert('INSERT INTO users (name,email,password) VALUES (?,?,?)', [name,email.toLowerCase(),hash]);
+    const count = await dbGet('SELECT COUNT(*) as total FROM users');
+    const isAdmin = parseInt(count?.total || 0) === 0 ? 1 : 0;
+    const r = await dbInsert('INSERT INTO users (name,email,password,is_admin) VALUES (?,?,?,?)', [name,email.toLowerCase(),hash,isAdmin]);
     const uid = r.lastInsertRowid;
     const cats = ['Moradia','Alimentação','Transporte','Saúde','Educação','Lazer','Vestuário','Contas','Outros'];
     const defs = [1200,600,300,350,200,200,150,300,150];
     for (let i=0;i<cats.length;i++)
       await dbRun('INSERT INTO category_limits (user_id,category,limit_amount) VALUES (?,?,?) ON CONFLICT DO NOTHING',[uid,cats[i],defs[i]]);
-    const token = jwt.sign({id:uid,name,email:email.toLowerCase()},JWT_SECRET,{expiresIn:'30d'});
-    res.json({token,user:{id:uid,name,email:email.toLowerCase()}});
+    const token = jwt.sign({id:uid,name,email:email.toLowerCase(),is_admin:isAdmin},JWT_SECRET,{expiresIn:'30d'});
+    res.json({token,user:{id:uid,name,email:email.toLowerCase(),is_admin:isAdmin,must_change_password:0}});
   } catch(e) {
     if (e.code==='23505') return res.status(400).json({error:'E-mail já cadastrado'});
     console.error(e); res.status(500).json({error:'Erro interno'});
@@ -175,8 +211,53 @@ app.post('/api/login', async (req, res) => {
   const user = await dbGet('SELECT * FROM users WHERE email=?',[email?.toLowerCase()]);
   if (!user||!bcrypt.compareSync(password,user.password))
     return res.status(401).json({error:'E-mail ou senha incorretos'});
-  const token = jwt.sign({id:user.id,name:user.name,email:user.email},JWT_SECRET,{expiresIn:'30d'});
-  res.json({token,user:{id:user.id,name:user.name,email:user.email}});
+  const token = jwt.sign({id:user.id,name:user.name,email:user.email,is_admin:user.is_admin},JWT_SECRET,{expiresIn:'30d'});
+  res.json({token,user:{id:user.id,name:user.name,email:user.email,is_admin:user.is_admin,must_change_password:user.must_change_password}});
+});
+
+app.get('/api/me', auth, async (req,res) => {
+  const user = await dbGet('SELECT id,name,email,is_admin,must_change_password,created_at FROM users WHERE id=?',[req.user.id]);
+  res.json(user);
+});
+app.put('/api/change-password', auth, async (req,res) => {
+  const {current_password,new_password}=req.body||{};
+  if (!new_password || new_password.length<6) return res.status(400).json({error:'Senha mínima: 6 caracteres'});
+  const user = await dbGet('SELECT * FROM users WHERE id=?',[req.user.id]);
+  if (!user) return res.status(404).json({error:'Usuário não encontrado'});
+  if (!user.must_change_password && !bcrypt.compareSync(current_password||'',user.password))
+    return res.status(401).json({error:'Senha atual incorreta'});
+  const hash=bcrypt.hashSync(new_password,10);
+  await dbRun('UPDATE users SET password=?,must_change_password=0 WHERE id=?',[hash,req.user.id]);
+  res.json({ok:true});
+});
+app.get('/api/users', auth, requireAdmin, async (req,res) => {
+  res.json(await dbAll('SELECT id,name,email,is_admin,must_change_password,created_at FROM users ORDER BY name'));
+});
+app.post('/api/users', auth, requireAdmin, async (req,res) => {
+  const {name,email,is_admin}=req.body||{};
+  if (!name||!email) return res.status(400).json({error:'Nome e e-mail obrigatórios'});
+  const password=tempPassword();
+  const hash=bcrypt.hashSync(password,10);
+  try {
+    const r=await dbInsert('INSERT INTO users (name,email,password,is_admin,must_change_password) VALUES (?,?,?,?,1)',[name,email.toLowerCase(),hash,is_admin?1:0]);
+    res.json({id:r.lastInsertRowid,temp_password:password});
+  } catch(e) {
+    if (e.code==='23505') return res.status(400).json({error:'E-mail já cadastrado'});
+    res.status(500).json({error:'Erro interno'});
+  }
+});
+app.put('/api/users/:id/temp-password', auth, requireAdmin, async (req,res) => {
+  const user = await dbGet('SELECT id FROM users WHERE id=?',[req.params.id]);
+  if (!user) return res.status(404).json({error:'Usuário não encontrado'});
+  const password=tempPassword();
+  const hash=bcrypt.hashSync(password,10);
+  await dbRun('UPDATE users SET password=?,must_change_password=1 WHERE id=?',[hash,req.params.id]);
+  res.json({temp_password:password});
+});
+app.put('/api/users/:id/admin', auth, requireAdmin, async (req,res) => {
+  if (parseInt(req.params.id) === req.user.id) return res.status(400).json({error:'Não altere seu próprio perfil de administrador'});
+  await dbRun('UPDATE users SET is_admin=? WHERE id=?',[req.body?.is_admin?1:0,req.params.id]);
+  res.json({ok:true});
 });
 
 // ── Payment Methods ───────────────────────────────────────────
@@ -208,15 +289,17 @@ app.delete('/api/payment-methods/:id', auth, async (req,res) => {
   res.json({ok:true});
 });
 app.get('/api/payment-methods/totals', auth, async (req,res) => {
-  const {month}=req.query;
+  const {month,kind}=req.query;
+  const txType = kind === 'income' ? 'Receita' : 'Despesa';
+  const pmTypeFilter = kind === 'income' ? "AND pm.type='receita'" : "AND pm.type IN ('credito','debito')";
   if (USE_PG) {
     const p=[req.user.id, month||null];
-    const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='Despesa' AND ($2::text IS NULL OR ${effMonth('t')}=$2) WHERE pm.user_id=$1 GROUP BY pm.id ORDER BY total DESC`,p);
+    const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='${txType}' AND ($2::text IS NULL OR ${effMonth('t')}=$2) WHERE pm.user_id=$1 ${pmTypeFilter} GROUP BY pm.id ORDER BY total DESC`,p);
     return res.json(rows);
   }
   // SQLite
   const mf = month ? `AND ${effMonth('t')}='${month}'` : '';
-  const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='Despesa' ${mf} WHERE pm.user_id=? GROUP BY pm.id ORDER BY total DESC`,[req.user.id]);
+  const rows=await rawQuery(`SELECT pm.id,pm.name,pm.type,pm.color,COALESCE(SUM(t.amount),0) as total,COUNT(t.id) as count FROM payment_methods pm LEFT JOIN transactions t ON t.payment_method_id=pm.id AND t.type='${txType}' ${mf} WHERE pm.user_id=? ${pmTypeFilter} GROUP BY pm.id ORDER BY total DESC`,[req.user.id]);
   res.json(rows);
 });
 
@@ -240,10 +323,10 @@ app.get('/api/transactions', auth, async (req,res) => {
 
 app.post('/api/transactions', auth, async (req,res) => {
   const {date,description,category,type,amount,note,
-         payment_type,payment_method_id,installments,is_fixed,competence_month}=req.body||{};
+         payment_type,payment_method_id,installments,is_fixed,competence_month,amount_mode}=req.body||{};
   if (!date||!description||!category||!type||!amount)
     return res.status(400).json({error:'Campos obrigatórios'});
-  const val=parseFloat(amount), nInst=parseInt(installments)||1;
+  const val=parseFloat(amount), nInst=Math.min(Math.max(parseInt(installments)||1,1),24);
   const pmId=payment_method_id||null, ptype=payment_type||'dinheiro';
   const month=date.slice(0,7);
   const comp=(competence_month&&competence_month!==month)?competence_month:null;
@@ -261,7 +344,7 @@ app.post('/api/transactions', auth, async (req,res) => {
     return res.json({id:r.lastInsertRowid,installments:1});
   }
   const groupId=`grp-${req.user.id}-${Date.now()}`;
-  const installAmt=Math.round((val/nInst)*100)/100;
+  const installAmt=amount_mode === 'parcel' ? Math.round(val*100)/100 : Math.round((val/nInst)*100)/100;
   const ids=[], [y,m2,d2]=date.split('-').map(Number);
   const [cy,cm]=(competence_month||month).split('-').map(Number);
   for (let i=0;i<nInst;i++) {
@@ -278,10 +361,22 @@ app.post('/api/transactions', auth, async (req,res) => {
 app.put('/api/transactions/:id', auth, async (req,res) => {
   const t=await dbGet('SELECT * FROM transactions WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
   if (!t) return res.status(404).json({error:'Não encontrado'});
-  const {date,description,category,type,amount,note,payment_type,payment_method_id,update_future,competence_month}=req.body||{};
+  const {date,description,category,type,amount,note,payment_type,payment_method_id,update_future,update_installments,competence_month}=req.body||{};
   const val=parseFloat(amount), ptype=payment_type||'dinheiro', pmId=payment_method_id||null;
   const month=(date||t.date).slice(0,7);
   const comp=(competence_month&&competence_month!==month)?competence_month:null;
+  if (t.group_id && update_installments) {
+    await dbRun(
+      'UPDATE transactions SET category=?,type=?,amount=?,note=?,payment_type=?,payment_method_id=? WHERE group_id=? AND user_id=?',
+      [category,type,val,note||'',ptype,pmId,t.group_id,req.user.id]
+    );
+    const groupRows = await dbAll('SELECT id,installment_number FROM transactions WHERE group_id=? AND user_id=? ORDER BY installment_number,id',[t.group_id,req.user.id]);
+    const cleanDesc = (description||'').replace(/ \(\d+\/\d+\)$/,'');
+    for (const row of groupRows) {
+      await dbRun('UPDATE transactions SET description=? WHERE id=?',[`${cleanDesc} (${row.installment_number}/${groupRows.length})`,row.id]);
+    }
+    return res.json({ok:true,updated_group:true});
+  }
   await dbRun('UPDATE transactions SET date=?,description=?,category=?,type=?,amount=?,note=?,payment_type=?,payment_method_id=?,competence_month=? WHERE id=?',
     [date,description,category,type,val,note||'',ptype,pmId,comp,req.params.id]);
   if (t.recurring_template_id&&update_future) {
@@ -315,6 +410,14 @@ app.delete('/api/transactions/:id', auth, async (req,res) => {
       [t.recurring_template_id, req.user.id, curMonth]
     );
     return res.json({ok:true, cancelled_from: curMonth});
+  }
+
+  if (t.recurring_template_id) {
+    const curMonth = (t.competence_month || t.date.slice(0,7));
+    await dbRun(
+      'INSERT INTO recurring_skips (user_id,recurring_template_id,skip_month) VALUES (?,?,?) ON CONFLICT DO NOTHING',
+      [req.user.id,t.recurring_template_id,curMonth]
+    );
   }
 
   // Excluir só este lançamento

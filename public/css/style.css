@@ -262,6 +262,7 @@ tr:hover td { background: var(--gray-50); }
 .deposit-row .dep-date { color: var(--gray-500); font-size: .78rem; }
 .deposit-row .dep-amount { font-weight: 700; color: var(--green); }
 .deposit-row .dep-note { color: var(--gray-500); font-size: .78rem; flex: 1; margin: 0 .75rem; }
+.temp-password { font-size: 1.4rem; font-weight: 800; letter-spacing: .08em; background: var(--green-bg); color: var(--green-dark); border: 1.5px solid var(--green-light); border-radius: 8px; padding: .9rem 1rem; text-align: center; }
 
 /* ── Fixed transaction badge ─────────────────────────────── */
 .fixed-badge { display: inline-block; background: #e8eaf6; color: #3949ab; padding: .15rem .45rem; border-radius: 10px; font-size: .7rem; font-weight: 700; margin-left: .25rem; }

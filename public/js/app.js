@@ -82,6 +82,32 @@ function logout() {
   location.reload();
 }
 
+function openChangePassword(required=false) {
+  openModal(required ? 'Definir nova senha' : 'Alterar senha', `
+    <div class="modal-form">
+      ${required ? '<p style="color:var(--gray-700);font-size:.9rem">Sua senha é temporária. Cadastre uma nova senha para continuar.</p>' : `
+      <div class="field"><label>Senha atual</label><input type="password" id="pwd-current"></div>`}
+      <div class="field"><label>Nova senha</label><input type="password" id="pwd-new" minlength="6" placeholder="mínimo 6 caracteres"></div>
+      <div class="field"><label>Confirmar nova senha</label><input type="password" id="pwd-confirm" minlength="6"></div>
+      <div class="modal-actions">
+        ${required ? '' : '<button class="btn-secondary" onclick="closeModal()">Cancelar</button>'}
+        <button class="btn-primary" onclick="savePasswordChange()">Salvar senha</button>
+      </div>
+    </div>`);
+}
+
+async function savePasswordChange() {
+  const np = $('pwd-new').value;
+  if (np !== $('pwd-confirm').value) return toast('As senhas não conferem', 'error');
+  try {
+    await api('PUT', '/api/change-password', { current_password: $('pwd-current')?.value || '', new_password: np });
+    currentUser.must_change_password = 0;
+    localStorage.setItem('user', JSON.stringify(currentUser));
+    closeModal();
+    toast('Senha atualizada!');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
 // ── Boot ─────────────────────────────────────────────────────
 async function bootApp() {
   $('auth-screen').classList.add('hidden');
@@ -91,6 +117,11 @@ async function bootApp() {
   $('user-name-nav').textContent = currentUser.name;
   $('user-email-nav').textContent = currentUser.email;
   $('user-avatar').textContent = currentUser.name[0].toUpperCase();
+  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', !currentUser.is_admin));
+
+  if (currentUser.must_change_password) {
+    openChangePassword(true);
+  }
 
   paymentMethods = await api('GET', '/api/payment-methods').catch(() => []);
   savingsAccounts = await api('GET', '/api/savings').catch(() => []);
@@ -114,8 +145,8 @@ function changeMonth(dir) {
 }
 
 // ── Navigation ────────────────────────────────────────────────
-const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, savings: renderSavings, goals: renderGoals, report: renderReport };
-const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', savings: '🏦 Cofrinhos', goals: '🎯 Metas', report: '📅 Relatório' };
+const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, history: renderHistory, users: renderUsers, report: renderReport };
+const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', incomeSources: '💼 Proventos', savings: '🏦 Cofrinhos', goals: '🎯 Metas', history: '🧾 Histórico', users: '👥 Usuários', report: '📅 Relatório' };
 
 function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(el => { el.classList.remove('active'); el.dataset.page = el.getAttribute('onclick')?.match(/'(\w+)'/)?.[1]; });
@@ -317,6 +348,7 @@ async function renderTransactions() {
 
 function pmBadgeHTML(t) {
   if (!t.payment_type || t.payment_type === 'dinheiro') return '<span class="pm-badge pm-badge-dinheiro">💵 Dinheiro</span>';
+  if (t.payment_type === 'receita') return t.pm_name ? `<span class="pm-badge pm-badge-dinheiro" style="background:${t.pm_color||'#2e7d32'}">${t.pm_name}</span>` : '<span class="pm-badge pm-badge-dinheiro">Receita</span>';
   if (t.payment_type === 'pix') return '<span class="pm-badge pm-badge-pix">⚡ PIX</span>';
   if (t.pm_name) return `<span class="pm-badge pm-badge-credito" style="background:${t.pm_color||'#1565c8'}">${t.pm_name}</span>`;
   if (t.payment_type === 'debito') return '<span class="pm-badge pm-badge-debito">🏧 Débito</span>';
@@ -328,6 +360,7 @@ function txFormHTML(t) {
   const d = t || { type: 'Despesa', date: new Date().toISOString().slice(0,10), payment_type: 'dinheiro', competence_month: new Date().toISOString().slice(0,7) };
   const creditCards = paymentMethods.filter(p => p.type === 'credito');
   const debitCards  = paymentMethods.filter(p => p.type === 'debito');
+  const incomeSources = paymentMethods.filter(p => p.type === 'receita');
   const allCards = [...creditCards, ...debitCards];
   return `
     <div class="modal-form">
@@ -360,6 +393,14 @@ function txFormHTML(t) {
           <option value="debito" ${d.payment_type==='debito'&&!d.payment_method_id?'selected':''}>🏧 Débito (outro)</option>
         </select>
       </div>
+      <div class="field hidden" id="field-income-source">
+        <label>Fonte de Receita / Provento</label>
+        <select id="tx-income-source">
+          <option value="">Sem fonte detalhada</option>
+          ${incomeSources.map(pm => `<option value="${pm.id}" ${d.payment_method_id===pm.id?'selected':''}>${pm.name}</option>`).join('')}
+        </select>
+        <div style="font-size:.75rem;color:var(--gray-500);margin-top:.25rem">Use a aba Proventos para criar fontes como salÃ¡rio, benefÃ­cio, aluguel ou comissÃ£o.</div>
+      </div>
       <div class="field" id="field-competence">
         <label>📅 Mês de pagamento / competência
           <span style="font-size:.75rem;color:var(--gray-500);font-weight:400"> — quando entra no orçamento</span>
@@ -372,10 +413,22 @@ function txFormHTML(t) {
         <label>Parcelas</label>
         <select id="tx-installments">
           <option value="1">À vista</option>
-          ${[2,3,4,5,6,7,8,9,10,11,12].map(n=>`<option value="${n}" ${d.installments===n?'selected':''}>${n}x</option>`).join('')}
+          ${Array.from({length:23},(_,i)=>i+2).map(n=>`<option value="${n}" ${d.installments===n?'selected':''}>${n}x</option>`).join('')}
+        </select>
+      </div>
+      <div class="field hidden" id="field-installment-amount-mode">
+        <label>Valor informado</label>
+        <select id="tx-amount-mode">
+          <option value="total">Valor total da compra</option>
+          <option value="parcel">Valor de cada parcela</option>
         </select>
       </div>
       <div class="field"><label>Observação (opcional)</label><input type="text" id="tx-note" value="${d.note||''}" placeholder="..."></div>
+      ${isEdit && d.group_id ? `
+      <div class="fixed-check-row">
+        <input type="checkbox" id="tx-edit-all-installments">
+        <label for="tx-edit-all-installments">Editar todas as parcelas deste lançamento</label>
+      </div>` : ''}
       ${!isEdit ? `
       <div class="fixed-check-row">
         <input type="checkbox" id="tx-fixed" onchange="onFixedChange()">
@@ -402,10 +455,12 @@ function txFormHTML(t) {
 function onPtypeChange() {
   const sel = $('tx-ptype')?.value || 'dinheiro';
   const instField = $('field-installments');
+  const modeField = $('field-installment-amount-mode');
   if (!instField) return;
   const pm = sel.startsWith('card-') ? paymentMethods.find(p => p.id === parseInt(sel.split('-')[1])) : null;
   const isCredit = pm?.type === 'credito';
   instField.classList.toggle('hidden', !isCredit);
+  modeField?.classList.toggle('hidden', !isCredit);
 
   // Auto-set competence month: credit card → next month by default
   const compInput = $('tx-competence');
@@ -434,15 +489,21 @@ function setType(type) {
   if (type === 'Receita') { $('tx-cat').value = 'Receita'; }
   const paymentField = $('field-payment-type');
   if (paymentField) paymentField.classList.toggle('hidden', type === 'Receita');
+  const incomeField = $('field-income-source');
+  if (incomeField) incomeField.classList.toggle('hidden', type !== 'Receita');
   const instField = $('field-installments');
   if (instField && type === 'Receita') instField.classList.add('hidden');
+  $('field-installment-amount-mode')?.classList.toggle('hidden', type === 'Receita');
 }
 
 function onFixedChange() {
   // Fixed and installments are mutually exclusive
   const fixed = $('tx-fixed')?.checked;
   const instField = $('field-installments');
-  if (fixed && instField) instField.classList.add('hidden');
+  if (fixed && instField) {
+    instField.classList.add('hidden');
+    $('field-installment-amount-mode')?.classList.add('hidden');
+  }
   else onPtypeChange();
 }
 
@@ -466,17 +527,27 @@ function parsePtypeValue(selValue) {
 
 function openAddTransaction() {
   openModal('Novo Lançamento', txFormHTML(null));
+  setType('Despesa');
+  onPtypeChange();
 }
 
 async function openEditTransaction(id) {
   const txs = await api('GET', `/api/transactions`);
   const t = txs.find(x => x.id === id);
-  if (t) openModal('Editar Lançamento', txFormHTML(t));
+  if (t) {
+    openModal('Editar Lançamento', txFormHTML(t));
+    setType(t.type || 'Despesa');
+    onPtypeChange();
+  }
 }
 
 async function saveNewTransaction() {
   try {
-    const { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
+    let { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
+    if ($('tx-type').value === 'Receita') {
+      payment_type = 'receita';
+      payment_method_id = $('tx-income-source')?.value || null;
+    }
     const installments = parseInt($('tx-installments')?.value) || 1;
     const is_fixed = $('tx-fixed')?.checked || false;
     const toSavings = $('tx-to-savings')?.checked || false;
@@ -488,6 +559,7 @@ async function saveNewTransaction() {
       amount: $('tx-amount').value, note: $('tx-note').value,
       payment_type, payment_method_id,
       installments: is_fixed ? 1 : installments,
+      amount_mode: $('tx-amount-mode')?.value || 'total',
       is_fixed,
       competence_month: $('tx-competence')?.value || null
     });
@@ -514,7 +586,11 @@ async function saveNewTransaction() {
 
 async function saveEditTransaction(id) {
   try {
-    const { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
+    let { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
+    if ($('tx-type').value === 'Receita') {
+      payment_type = 'receita';
+      payment_method_id = $('tx-income-source')?.value || null;
+    }
     // Check if it's a recurring transaction (template_id set)
     const txs = await api('GET', `/api/transactions`);
     const tx = txs.find(t => t.id === id);
@@ -527,6 +603,7 @@ async function saveEditTransaction(id) {
       category: $('tx-cat').value, type: $('tx-type').value,
       amount: $('tx-amount').value, note: $('tx-note').value,
       payment_type, payment_method_id, update_future,
+      update_installments: $('tx-edit-all-installments')?.checked || false,
       competence_month: $('tx-competence')?.value || null
     });
     closeModal(); toast('Atualizado!'); renderTransactions();
@@ -698,6 +775,8 @@ async function renderCards() {
             <div class="card-total-type">${typeLabel[pm.type]||pm.type}</div>
             <div class="card-total-amount" style="color:${pm.total>0?'var(--red)':'var(--gray-500)'}">${fmtBRL(pm.total)}</div>
             <div class="card-total-count">${pm.count} transaç${pm.count===1?'ão':'ões'} neste mês</div>
+            <div id="card-hist-${pm.id}" class="deposit-history hidden"></div>
+            <button style="background:none;border:none;color:var(--gray-500);font-size:.8rem;cursor:pointer;margin-top:.5rem" onclick="toggleCardDetails(${pm.id})">📋 Ver lançamentos</button>
           </div>`).join('')}
       </div>`}
 
@@ -724,6 +803,22 @@ async function renderCards() {
             </div>`).join('')}
         </div>`}
     </div>`;
+}
+
+async function toggleCardDetails(id) {
+  const el = $(`card-hist-${id}`);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  const txs = await api('GET', `/api/transactions?month=${currentMonth}&payment_method_id=${id}`);
+  el.innerHTML = txs.length === 0
+    ? '<p style="color:var(--gray-500);font-size:.85rem;text-align:center;padding:.5rem">Sem lançamentos neste mês</p>'
+    : txs.map(t => `
+        <div class="deposit-row">
+          <span class="dep-date">${fmtDate(t.date)}</span>
+          <span class="dep-note">${t.description}${t.installments>1?` (${t.installment_number}/${t.installments})`:''}</span>
+          <span class="dep-amount" style="color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${t.type==='Receita'?'+':'-'}${fmtBRL(t.amount)}</span>
+        </div>`).join('');
+  el.classList.remove('hidden');
 }
 
 function cardFormHTML(pm) {
@@ -780,11 +875,72 @@ async function deleteCard(id) {
   try {
     await api('DELETE', `/api/payment-methods/${id}`);
     paymentMethods = await api('GET', '/api/payment-methods');
-    toast('Cartão removido!'); renderCards();
+    toast('Removido!');
+    const active = document.querySelector('.nav-item.active')?.dataset.page;
+    active === 'incomeSources' ? renderIncomeSources() : renderCards();
   } catch(e) { toast(e.message, 'error'); }
 }
 
 // ── Savings page ──────────────────────────────────────────────
+async function renderIncomeSources() {
+  const [pms, totals] = await Promise.all([
+    api('GET', '/api/payment-methods'),
+    api('GET', `/api/payment-methods/totals?month=${currentMonth}&kind=income`)
+  ]);
+  paymentMethods = pms;
+  const sources = pms.filter(p => p.type === 'receita');
+  const total = totals.reduce((s,t)=>s+parseFloat(t.total||0),0);
+  $('main-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+      <div><h3 style="font-size:1rem;font-weight:700">Proventos — ${monthLabel(currentMonth)}</h3><div style="font-size:1.5rem;font-weight:700;color:var(--green)">${fmtBRL(total)}</div></div>
+      <button class="btn-primary" onclick="openAddIncomeSource()">+ Nova Fonte</button>
+    </div>
+    ${sources.length === 0 ? `<div class="empty-state card"><div class="empty-icon">💼</div><p>Nenhuma fonte de receita cadastrada.</p><br><button class="btn-primary" onclick="openAddIncomeSource()">Cadastrar fonte</button></div>` : `<div class="cards-totals-grid">${totals.map(src => `
+      <div class="card-total-card" style="border-top-color:${src.color}">
+        <div class="card-total-actions"><button class="btn-icon" onclick="openEditIncomeSource(${src.id})">✏️</button><button class="btn-icon" onclick="deleteCard(${src.id})">🗑️</button></div>
+        <div class="card-total-name">${src.name}</div><div class="card-total-type">Fonte de receita</div>
+        <div class="card-total-amount" style="color:var(--green)">${fmtBRL(src.total)}</div>
+        <div class="card-total-count">${src.count} lançamento${src.count===1?'':'s'} neste mês</div>
+        <div id="income-hist-${src.id}" class="deposit-history hidden"></div>
+        <button style="background:none;border:none;color:var(--gray-500);font-size:.8rem;cursor:pointer;margin-top:.5rem" onclick="toggleIncomeDetails(${src.id})">📋 Ver lançamentos</button>
+      </div>`).join('')}</div>`}`;
+}
+
+function incomeSourceFormHTML(src) {
+  const d = src || { color:'#2e7d32' };
+  return `<div class="modal-form">
+    <div class="field"><label>Nome da fonte</label><input type="text" id="income-name" value="${d.name||''}" placeholder="Ex: Salário, INSS, Aluguel"></div>
+    <div class="field"><label>Cor</label><input type="color" id="income-color" value="${d.color||'#2e7d32'}" style="width:48px;height:40px;border:none;border-radius:8px;cursor:pointer;padding:2px"></div>
+    <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="${src?`saveEditIncomeSource(${src.id})`:'saveNewIncomeSource()'}">${src?'Salvar':'Cadastrar'}</button></div>
+  </div>`;
+}
+function openAddIncomeSource() { openModal('Nova fonte de receita', incomeSourceFormHTML(null)); }
+function openEditIncomeSource(id) { const src = paymentMethods.find(p => p.id === id); if (src) openModal('Editar fonte', incomeSourceFormHTML(src)); }
+async function saveNewIncomeSource() { try { await api('POST','/api/payment-methods',{name:$('income-name').value,type:'receita',color:$('income-color').value}); closeModal(); toast('Fonte cadastrada!'); renderIncomeSources(); } catch(e) { toast(e.message,'error'); } }
+async function saveEditIncomeSource(id) { try { await api('PUT',`/api/payment-methods/${id}`,{name:$('income-name').value,type:'receita',color:$('income-color').value}); closeModal(); toast('Fonte atualizada!'); renderIncomeSources(); } catch(e) { toast(e.message,'error'); } }
+async function toggleIncomeDetails(id) {
+  const el = $(`income-hist-${id}`); if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  const txs = await api('GET', `/api/transactions?month=${currentMonth}&payment_method_id=${id}`);
+  el.innerHTML = txs.length === 0 ? '<p style="color:var(--gray-500);font-size:.85rem;text-align:center;padding:.5rem">Sem lançamentos neste mês</p>' : txs.map(t => `<div class="deposit-row"><span class="dep-date">${fmtDate(t.date)}</span><span class="dep-note">${t.description}</span><span class="dep-amount">+${fmtBRL(t.amount)}</span></div>`).join('');
+  el.classList.remove('hidden');
+}
+
+async function renderHistory() {
+  const txs = await api('GET', '/api/transactions');
+  $('main-content').innerHTML = `<div class="table-card"><div class="table-header"><h3>Histórico geral por data do lançamento</h3><span style="font-size:.85rem;color:var(--gray-500)">${txs.length} registros</span></div>
+    ${txs.length===0?'<div class="empty-state"><div class="empty-icon">🧾</div><p>Sem lançamentos</p></div>':`<div style="overflow-x:auto"><table><thead><tr><th>Data</th><th>Competência</th><th>Descrição</th><th>Categoria</th><th>Pagamento/Fonte</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead><tbody>${txs.map(t => `<tr><td style="white-space:nowrap">${fmtDate(t.date)}</td><td>${monthLabel(t.effective_month || t.competence_month || t.date.slice(0,7))}</td><td>${t.description}${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}</td><td><span class="badge badge-blue">${t.category}</span></td><td>${pmBadgeHTML(t)}</td><td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td><td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td><td style="white-space:nowrap"><button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button><button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button></td></tr>`).join('')}</tbody></table></div>`}</div>`;
+}
+
+async function renderUsers() {
+  const users = await api('GET','/api/users');
+  $('main-content').innerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:1rem"><button class="btn-primary" onclick="openAddUser()">+ Novo Usuário</button></div><div class="table-card"><div class="table-header"><h3>Gerenciador de usuários</h3></div><div style="overflow-x:auto"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th></th></tr></thead><tbody>${users.map(u => `<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${u.is_admin?'Administrador':'Usuário'}</td><td>${u.must_change_password?'<span class="badge badge-orange">senha temporária</span>':'<span class="badge badge-green">ativo</span>'}</td><td style="white-space:nowrap"><button class="btn-secondary" onclick="resetUserPassword(${u.id})">Senha temporária</button>${u.id===currentUser.id?'':` <button class="btn-secondary" onclick="toggleUserAdmin(${u.id},${u.is_admin?0:1})">${u.is_admin?'Remover admin':'Tornar admin'}</button>`}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+function openAddUser() { openModal('Novo usuário', `<div class="modal-form"><div class="field"><label>Nome</label><input type="text" id="new-user-name"></div><div class="field"><label>E-mail</label><input type="email" id="new-user-email"></div><div class="fixed-check-row"><input type="checkbox" id="new-user-admin"><label for="new-user-admin">Administrador</label></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveNewUser()">Criar com senha temporária</button></div></div>`); }
+async function saveNewUser() { try { const r = await api('POST','/api/users',{name:$('new-user-name').value,email:$('new-user-email').value,is_admin:$('new-user-admin').checked}); closeModal(); openModal('Senha temporária criada', `<div class="modal-form"><p>Informe esta senha ao usuário:</p><div class="temp-password">${r.temp_password}</div><div class="modal-actions"><button class="btn-primary" onclick="closeModal();renderUsers()">OK</button></div></div>`); } catch(e) { toast(e.message,'error'); } }
+async function resetUserPassword(id) { try { const r = await api('PUT',`/api/users/${id}/temp-password`,{}); openModal('Nova senha temporária', `<div class="modal-form"><p>Informe esta senha ao usuário:</p><div class="temp-password">${r.temp_password}</div><div class="modal-actions"><button class="btn-primary" onclick="closeModal();renderUsers()">OK</button></div></div>`); } catch(e) { toast(e.message,'error'); } }
+async function toggleUserAdmin(id,is_admin) { try { await api('PUT',`/api/users/${id}/admin`,{is_admin}); toast('Perfil atualizado!'); renderUsers(); } catch(e) { toast(e.message,'error'); } }
+
 async function renderSavings() {
   savingsAccounts = await api('GET', '/api/savings');
   const grandTotal = savingsAccounts.reduce((s, a) => s + a.balance, 0);
