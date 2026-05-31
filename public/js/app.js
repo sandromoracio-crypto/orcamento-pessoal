@@ -475,8 +475,14 @@ async function renderDashboard() {
 }
 
 // ── Transactions ──────────────────────────────────────────────
+let _allTxs = []; // cache for client-side filtering
+
 async function renderTransactions() {
-  const txs = await api('GET', `/api/transactions?month=${currentMonth}`);
+  _allTxs = await api('GET', `/api/transactions?month=${currentMonth}`);
+
+  // Collect unique categories and payment methods for filter dropdowns
+  const cats = [...new Set(_allTxs.map(t => t.category))].sort();
+  const pms  = [...new Set(_allTxs.map(t => t.pm_name || t.payment_type || 'dinheiro'))].sort();
 
   $('main-content').innerHTML = `
     <div class="table-card">
@@ -487,32 +493,100 @@ async function renderTransactions() {
           <button class="btn-primary" onclick="openAddTransaction()">+ Novo</button>
         </div>
       </div>
-      ${txs.length === 0
-        ? '<div class="empty-state"><div class="empty-icon">💸</div><p>Nenhum lançamento neste mês.</p><br><button class="btn-primary" onclick="openAddTransaction()">Adicionar primeiro lançamento</button></div>'
-        : `<div style="overflow-x:auto"><table>
-        <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead>
-        <tbody>
-          ${txs.map(t => `
-            <tr>
-              <td style="white-space:nowrap">${fmtDate(t.date)}</td>
-              <td>
-                ${t.description}
-                ${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}
-                ${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}
-                ${t.competence_month && t.competence_month !== t.date?.slice(0,7) ? `<span class="comp-badge">📅 pag. ${monthLabel(t.competence_month)}</span>` : ''}
-              </td>
-              <td><span class="badge badge-blue">${t.category}</span></td>
-              <td>${pmBadgeHTML(t)}</td>
-              <td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td>
-              <td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td>
-              <td style="white-space:nowrap">
-                <button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button>
-                <button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button>
-              </td>
-            </tr>`).join('')}
-        </tbody>
-      </table></div>`}
+
+      <!-- Filtros -->
+      <div class="tx-filters" id="tx-filters">
+        <input type="search" id="f-search" placeholder="🔍 Buscar descrição..." oninput="applyTxFilters()" class="f-input">
+        <select id="f-type" onchange="applyTxFilters()" class="f-select">
+          <option value="">Tipo: Todos</option>
+          <option value="Receita">💚 Receita</option>
+          <option value="Despesa">❤️ Despesa</option>
+        </select>
+        <select id="f-cat" onchange="applyTxFilters()" class="f-select">
+          <option value="">Categoria: Todas</option>
+          ${cats.map(c => `<option value="${c}">${c}</option>`).join('')}
+        </select>
+        <select id="f-pm" onchange="applyTxFilters()" class="f-select">
+          <option value="">Pagamento: Todos</option>
+          ${pms.map(p => `<option value="${p}">${p}</option>`).join('')}
+        </select>
+        <button class="f-clear" onclick="clearTxFilters()" title="Limpar filtros">✕ Limpar</button>
+      </div>
+
+      <div id="tx-table-wrap"></div>
     </div>`;
+
+  applyTxFilters();
+}
+
+function applyTxFilters() {
+  const search = ($('f-search')?.value || '').toLowerCase();
+  const type   = $('f-type')?.value || '';
+  const cat    = $('f-cat')?.value || '';
+  const pm     = $('f-pm')?.value || '';
+
+  const filtered = _allTxs.filter(t => {
+    if (search && !t.description.toLowerCase().includes(search)) return false;
+    if (type   && t.type !== type) return false;
+    if (cat    && t.category !== cat) return false;
+    if (pm) {
+      const txPm = t.pm_name || t.payment_type || 'dinheiro';
+      if (txPm !== pm) return false;
+    }
+    return true;
+  });
+
+  const hasFilter = search || type || cat || pm;
+  const wrap = $('tx-table-wrap');
+  if (!wrap) return;
+
+  if (_allTxs.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">💸</div><p>Nenhum lançamento neste mês.</p><br><button class="btn-primary" onclick="openAddTransaction()">Adicionar primeiro lançamento</button></div>';
+    return;
+  }
+  if (filtered.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><p>Nenhum resultado para os filtros aplicados.</p>${hasFilter?'<br><button class="btn-secondary" onclick="clearTxFilters()">Limpar filtros</button>':''}</div>`;
+    return;
+  }
+
+  const totR = filtered.filter(t=>t.type==='Receita').reduce((s,t)=>s+t.amount,0);
+  const totD = filtered.filter(t=>t.type==='Despesa').reduce((s,t)=>s+t.amount,0);
+
+  wrap.innerHTML = `
+    ${hasFilter ? `<div class="f-summary">
+      <span>📋 ${filtered.length} de ${_allTxs.length} lançamentos</span>
+      ${totR>0?`<span style="color:var(--green);font-weight:700">+${fmtBRL(totR)}</span>`:''}
+      ${totD>0?`<span style="color:var(--red);font-weight:700">-${fmtBRL(totD)}</span>`:''}
+    </div>` : ''}
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead>
+      <tbody>
+        ${filtered.map(t => `
+          <tr>
+            <td style="white-space:nowrap">${fmtDate(t.date)}</td>
+            <td>
+              ${t.description}
+              ${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}
+              ${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}
+              ${t.competence_month && t.competence_month !== t.date?.slice(0,7) ? `<span class="comp-badge">📅 pag. ${monthLabel(t.competence_month)}</span>` : ''}
+            </td>
+            <td><span class="badge badge-blue">${t.category}</span></td>
+            <td>${pmBadgeHTML(t)}</td>
+            <td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td>
+            <td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button>
+              <button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+}
+
+function clearTxFilters() {
+  const ids = ['f-search','f-type','f-cat','f-pm'];
+  ids.forEach(id => { const el = $(id); if (el) el.value = ''; });
+  applyTxFilters();
 }
 
 function pmBadgeHTML(t) {

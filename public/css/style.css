@@ -151,6 +151,16 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--gray-10
 .chart-card h3 { font-size: .95rem; font-weight: 700; margin-bottom: 1rem; color: var(--gray-700); }
 .chart-wrap { position: relative; height: 240px; }
 
+/* ── Filters ─────────────────────────────────────────────── */
+.tx-filters { display: flex; flex-wrap: wrap; gap: .5rem; padding: .75rem 1.25rem; border-bottom: 1px solid var(--gray-200); background: var(--gray-100); }
+.f-input { flex: 1; min-width: 160px; padding: .45rem .75rem; border: 1.5px solid var(--gray-300); border-radius: 8px; font-size: .85rem; outline: none; background: #fff; }
+.f-input:focus { border-color: var(--green); }
+.f-select { padding: .45rem .6rem; border: 1.5px solid var(--gray-300); border-radius: 8px; font-size: .82rem; background: #fff; outline: none; cursor: pointer; color: var(--gray-700); }
+.f-select:focus { border-color: var(--green); }
+.f-clear { background: none; border: 1.5px solid var(--gray-300); border-radius: 8px; padding: .45rem .75rem; font-size: .8rem; color: var(--gray-500); cursor: pointer; white-space: nowrap; transition: all .15s; }
+.f-clear:hover { border-color: var(--red); color: var(--red); background: #fff0f0; }
+.f-summary { display: flex; align-items: center; gap: 1rem; padding: .5rem 1.25rem; font-size: .82rem; color: var(--gray-500); background: #f9fbe7; border-bottom: 1px solid var(--gray-200); flex-wrap: wrap; }
+
 /* ── Table ───────────────────────────────────────────────── */
 .table-card { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 1rem; }
 .table-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--gray-200); }
