@@ -1061,6 +1061,11 @@ async function renderReport() {
   const limMap = {}; (data.limits||[]).forEach(l => limMap[l.category] = l.limit_amount);
 
   $('main-content').innerHTML = `
+    <div class="report-actions">
+      <button class="btn-primary btn-excel" onclick="exportExcel()">
+        📊 Exportar Excel
+      </button>
+    </div>
     <div class="report-summary">
       <div class="card green-border"><div class="card-label">Receita</div><div class="card-value text-green">${fmtBRL(data.income)}</div></div>
       <div class="card red-border"><div class="card-label">Despesas</div><div class="card-value text-red">${fmtBRL(data.expense)}</div></div>
@@ -1124,6 +1129,202 @@ async function renderReport() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
     });
+  }
+}
+
+// ── Export Excel ──────────────────────────────────────────────
+async function exportExcel() {
+  if (!window.XLSX) {
+    toast('Biblioteca do Excel não carregou. Verifique a conexão e tente novamente.', 'error');
+    return;
+  }
+
+  try {
+    toast('Gerando planilha...', 'success');
+
+    const allTxs = await api('GET', '/api/transactions');
+    if (!allTxs.length) {
+      toast('Nenhum lançamento para exportar.', 'error');
+      return;
+    }
+
+    const byMonth = {};
+    allTxs.forEach(t => {
+      const m = t.effective_month || t.competence_month || t.date?.slice(0, 7) || 'Sem data';
+      if (!byMonth[m]) byMonth[m] = [];
+      byMonth[m].push(t);
+    });
+
+    const months = Object.keys(byMonth).sort();
+    const wb = XLSX.utils.book_new();
+
+    const GREEN_FILL = { fgColor: { rgb: '1B5E20' } };
+    const LIGHT_GREEN = { fgColor: { rgb: 'E8F5E9' } };
+    const LIGHT_RED = { fgColor: { rgb: 'FFEBEE' } };
+    const ZEBRA = { fgColor: { rgb: 'FAFAFA' } };
+    const headerStyle = {
+      font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 11 },
+      fill: GREEN_FILL,
+      alignment: { horizontal: 'center' },
+      border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } }
+    };
+    const titleStyle = { font: { bold: true, sz: 14, color: { rgb: '1B5E20' } } };
+    const totalStyle = { font: { bold: true }, fill: LIGHT_GREEN };
+    const currFmt = 'R$\\ #,##0.00;(R$\\ #,##0.00);"-"';
+    const dateFmt = 'dd/mm/yyyy';
+    const pctFmt = '0.0%';
+
+    const applyCurrency = (ws, ref, style) => {
+      if (!ws[ref]) return;
+      ws[ref].t = 'n';
+      ws[ref].z = currFmt;
+      if (style) ws[ref].s = style;
+    };
+    const applyPercent = (ws, ref, style) => {
+      if (!ws[ref]) return;
+      ws[ref].t = 'n';
+      ws[ref].z = pctFmt;
+      if (style) ws[ref].s = style;
+    };
+
+    const monthTotals = months.map(m => {
+      const txs = byMonth[m];
+      const inc = txs.filter(t => t.type === 'Receita').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+      const exp = txs.filter(t => t.type === 'Despesa').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+      return { m, inc, exp, bal: inc - exp, rate: inc > 0 ? (inc - exp) / inc : 0, count: txs.length };
+    });
+
+    const summaryData = [
+      ['RESUMO FINANCEIRO POR MÊS', '', '', '', '', ''],
+      [''],
+      ['Mês', 'Receitas', 'Despesas', 'Saldo', 'Taxa Poupança', 'Nº Lançamentos'],
+      ...monthTotals.map(({ m, inc, exp, bal, rate, count }) => [monthLabel(m), inc, exp, bal, rate, count]),
+      ['']
+    ];
+    const totInc = monthTotals.reduce((s, x) => s + x.inc, 0);
+    const totExp = monthTotals.reduce((s, x) => s + x.exp, 0);
+    summaryData.push(['TOTAL GERAL', totInc, totExp, totInc - totExp, totInc > 0 ? (totInc - totExp) / totInc : 0, allTxs.length]);
+
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+    wsSummary['!cols'] = [{ wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }];
+    wsSummary['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+    wsSummary['!autofilter'] = { ref: `A3:F${monthTotals.length + 3}` };
+    if (wsSummary.A1) wsSummary.A1.s = titleStyle;
+    ['A', 'B', 'C', 'D', 'E', 'F'].forEach(col => { if (wsSummary[`${col}3`]) wsSummary[`${col}3`].s = headerStyle; });
+    for (let i = 0; i < monthTotals.length; i++) {
+      const row = 4 + i;
+      ['B', 'C', 'D'].forEach(col => applyCurrency(wsSummary, `${col}${row}`));
+      applyPercent(wsSummary, `E${row}`);
+    }
+    const totalRow = monthTotals.length + 5;
+    ['B', 'C', 'D'].forEach(col => applyCurrency(wsSummary, `${col}${totalRow}`));
+    applyPercent(wsSummary, `E${totalRow}`);
+    ['A', 'B', 'C', 'D', 'E', 'F'].forEach(col => { if (wsSummary[`${col}${totalRow}`]) wsSummary[`${col}${totalRow}`].s = totalStyle; });
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumo Geral');
+
+    const allRows = [];
+
+    months.forEach(m => {
+      const txs = byMonth[m].sort((a, b) => (a.date || '').localeCompare(b.date || '') || a.id - b.id);
+      const label = monthLabel(m);
+      const headers = [
+        'Data do Gasto', 'Mês de Pagamento', 'Descrição', 'Categoria',
+        'Tipo', 'Forma de Pagamento', 'Parcela', 'Valor', 'Observação'
+      ];
+      const rows = txs.map(t => {
+        const pmName = t.pm_name || (t.payment_type === 'dinheiro' ? 'Dinheiro' : t.payment_type === 'pix' ? 'PIX' : t.payment_type || 'Dinheiro');
+        const parcela = Number(t.installments) > 1 ? `${t.installment_number}/${t.installments}` : '';
+        const compMonth = t.competence_month ? monthLabel(t.competence_month) : monthLabel(m);
+        const row = [
+          t.date ? new Date(t.date + 'T12:00:00') : '',
+          compMonth,
+          t.description || '',
+          t.category || '',
+          t.type || '',
+          pmName,
+          parcela,
+          parseFloat(t.amount || 0),
+          t.note || ''
+        ];
+        allRows.push([label, ...row]);
+        return row;
+      });
+
+      const inc = txs.filter(t => t.type === 'Receita').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+      const exp = txs.filter(t => t.type === 'Despesa').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+      const sheetData = [
+        [`LANÇAMENTOS - ${label.toUpperCase()}`, '', '', '', '', '', '', '', ''],
+        [''],
+        headers,
+        ...rows,
+        [''],
+        ['', '', '', '', '', '', 'RECEITA TOTAL:', inc, ''],
+        ['', '', '', '', '', '', 'DESPESA TOTAL:', exp, ''],
+        ['', '', '', '', '', '', 'SALDO:', inc - exp, ''],
+        ['', '', '', '', '', '', 'TAXA POUPANÇA:', inc > 0 ? (inc - exp) / inc : 0, ''],
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(sheetData, { dateNF: dateFmt });
+      ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 32 }, { wch: 16 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 24 }];
+      ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
+      ws['!autofilter'] = { ref: `A3:I${rows.length + 3}` };
+      ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+      if (ws.A1) ws.A1.s = titleStyle;
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'].forEach(col => { if (ws[`${col}3`]) ws[`${col}3`].s = headerStyle; });
+
+      rows.forEach((row, i) => {
+        const sheetRow = i + 4;
+        const isReceita = row[4] === 'Receita';
+        const fill = isReceita ? LIGHT_GREEN : (i % 2 === 0 ? null : ZEBRA);
+        const baseStyle = fill ? { fill } : undefined;
+        if (ws[`A${sheetRow}`]) { ws[`A${sheetRow}`].t = 'd'; ws[`A${sheetRow}`].z = dateFmt; ws[`A${sheetRow}`].s = { ...(baseStyle || {}), alignment: { horizontal: 'center' } }; }
+        ['B', 'C', 'D', 'E', 'F', 'G', 'I'].forEach(col => { if (ws[`${col}${sheetRow}`] && baseStyle) ws[`${col}${sheetRow}`].s = baseStyle; });
+        applyCurrency(ws, `H${sheetRow}`, {
+          ...(baseStyle || {}),
+          font: { bold: true, color: { rgb: isReceita ? '1B5E20' : 'C62828' } },
+          alignment: { horizontal: 'right' }
+        });
+      });
+
+      const totalStart = rows.length + 5;
+      [
+        [totalStart, 'Receita'],
+        [totalStart + 1, 'Despesa'],
+        [totalStart + 2, 'Saldo']
+      ].forEach(([r, tipo]) => {
+        if (ws[`G${r}`]) ws[`G${r}`].s = { font: { bold: true }, alignment: { horizontal: 'right' } };
+        applyCurrency(ws, `H${r}`, { font: { bold: true, color: { rgb: tipo === 'Receita' ? '1B5E20' : tipo === 'Despesa' ? 'C62828' : (inc - exp >= 0 ? '1B5E20' : 'C62828') } } });
+      });
+      if (ws[`G${totalStart + 3}`]) ws[`G${totalStart + 3}`].s = { font: { bold: true }, alignment: { horizontal: 'right' } };
+      applyPercent(ws, `H${totalStart + 3}`, { font: { bold: true } });
+
+      const sheetName = label.replace(/[\\\/\?\*\[\]]/g, '').slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    });
+
+    const detailHeaders = ['Mês', 'Data do Gasto', 'Mês de Pagamento', 'Descrição', 'Categoria', 'Tipo', 'Forma de Pagamento', 'Parcela', 'Valor', 'Observação'];
+    const wsDetail = XLSX.utils.aoa_to_sheet([['TODOS OS LANÇAMENTOS', '', '', '', '', '', '', '', '', ''], [''], detailHeaders, ...allRows], { dateNF: dateFmt });
+    wsDetail['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 32 }, { wch: 16 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 24 }];
+    wsDetail['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }];
+    wsDetail['!autofilter'] = { ref: `A3:J${allRows.length + 3}` };
+    wsDetail['!freeze'] = { xSplit: 0, ySplit: 3 };
+    if (wsDetail.A1) wsDetail.A1.s = titleStyle;
+    ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'].forEach(col => { if (wsDetail[`${col}3`]) wsDetail[`${col}3`].s = headerStyle; });
+    allRows.forEach((row, i) => {
+      const sheetRow = i + 4;
+      if (wsDetail[`B${sheetRow}`]) { wsDetail[`B${sheetRow}`].t = 'd'; wsDetail[`B${sheetRow}`].z = dateFmt; }
+      applyCurrency(wsDetail, `I${sheetRow}`);
+      if (row[5] === 'Receita' && wsDetail[`I${sheetRow}`]) wsDetail[`I${sheetRow}`].s = { font: { bold: true, color: { rgb: '1B5E20' } }, fill: LIGHT_GREEN };
+      if (row[5] === 'Despesa' && wsDetail[`I${sheetRow}`]) wsDetail[`I${sheetRow}`].s = { font: { bold: true, color: { rgb: 'C62828' } }, fill: LIGHT_RED };
+    });
+    XLSX.utils.book_append_sheet(wb, wsDetail, 'Todos Lancamentos');
+
+    const now = new Date();
+    const fileName = `Orcamento_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    toast(`Planilha "${fileName}" baixada!`);
+  } catch(e) {
+    toast(e.message || 'Não foi possível exportar a planilha.', 'error');
   }
 }
 

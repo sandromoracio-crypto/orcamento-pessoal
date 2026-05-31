@@ -191,6 +191,9 @@ tr:hover td { background: var(--gray-50); }
 
 /* ── Report ──────────────────────────────────────────────── */
 .report-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+.report-actions { display: flex; justify-content: flex-end; gap: .75rem; margin-bottom: 1rem; }
+.btn-excel { background: #1b5e20; display: inline-flex; align-items: center; gap: .5rem; }
+.btn-excel:hover { background: #104015; }
 
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 768px) {
@@ -206,6 +209,8 @@ tr:hover td { background: var(--gray-50); }
   td:nth-child(4), th:nth-child(4) { display: none; }
   .content { padding: 1rem; }
   .topbar { padding: 0 1rem; }
+  .report-actions { justify-content: stretch; }
+  .report-actions .btn-primary { width: 100%; justify-content: center; }
 }
 @media (max-width: 480px) {
   .cards-grid { grid-template-columns: 1fr; }
