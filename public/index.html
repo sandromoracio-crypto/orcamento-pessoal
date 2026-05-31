@@ -33,6 +33,38 @@
       </div>
       <div id="login-error" class="form-error hidden"></div>
       <button type="submit" class="btn-primary full-width">Entrar</button>
+      <p style="text-align:center;margin-top:.75rem;font-size:.85rem">
+        <a href="#" onclick="showTab('forgot');return false;" style="color:var(--green);text-decoration:none">Esqueci minha senha</a>
+      </p>
+    </form>
+
+    <!-- Esqueci a senha -->
+    <form id="forgot-form" class="auth-form hidden" onsubmit="forgotPassword(event)">
+      <p style="font-size:.9rem;color:#555;margin-bottom:1rem">Digite seu e-mail e enviaremos um link para redefinir sua senha.</p>
+      <div class="field">
+        <label>E-mail</label>
+        <input type="email" id="forgot-email" placeholder="seu@email.com" required>
+      </div>
+      <div id="forgot-msg" class="hidden" style="padding:.6rem .9rem;border-radius:8px;font-size:.85rem;margin-bottom:.5rem"></div>
+      <button type="submit" class="btn-primary full-width">Enviar link de recuperação</button>
+      <p style="text-align:center;margin-top:.75rem;font-size:.85rem">
+        <a href="#" onclick="showTab('login');return false;" style="color:var(--green);text-decoration:none">← Voltar ao login</a>
+      </p>
+    </form>
+
+    <!-- Redefinir senha (acessado via link do e-mail) -->
+    <form id="reset-form" class="auth-form hidden" onsubmit="resetPassword(event)">
+      <p style="font-size:.9rem;color:#555;margin-bottom:1rem">Digite sua nova senha.</p>
+      <div class="field">
+        <label>Nova senha</label>
+        <input type="password" id="reset-password" placeholder="mínimo 6 caracteres" required minlength="6">
+      </div>
+      <div class="field">
+        <label>Confirmar nova senha</label>
+        <input type="password" id="reset-password2" placeholder="repita a senha" required minlength="6">
+      </div>
+      <div id="reset-error" class="form-error hidden"></div>
+      <button type="submit" class="btn-primary full-width">Redefinir senha</button>
     </form>
 
     <!-- Register -->

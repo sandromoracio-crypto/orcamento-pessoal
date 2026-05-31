@@ -47,7 +47,62 @@ function showTab(tab) {
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', (i===0&&tab==='login')||(i===1&&tab==='register')));
   $('login-form').classList.toggle('hidden', tab !== 'login');
   $('register-form').classList.toggle('hidden', tab !== 'register');
+  $('forgot-form')?.classList.toggle('hidden', tab !== 'forgot');
+  $('reset-form')?.classList.toggle('hidden', tab !== 'reset');
 }
+
+async function forgotPassword(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  const msg = $('forgot-msg');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    await api('POST', '/api/forgot-password', { email: $('forgot-email').value });
+    msg.className = ''; msg.style.background='#e8f5e9'; msg.style.color='#2e7d32'; msg.style.border='1px solid #a5d6a7';
+    msg.textContent = '✅ Se este e-mail estiver cadastrado, você receberá o link em breve.';
+    msg.classList.remove('hidden');
+    btn.textContent = 'Enviado!';
+  } catch(err) {
+    msg.className = ''; msg.style.background='#ffebee'; msg.style.color='#c62828'; msg.style.border='1px solid #ef9a9a';
+    msg.textContent = err.message || 'Erro ao enviar. Tente novamente.';
+    msg.classList.remove('hidden');
+    btn.disabled = false; btn.textContent = 'Enviar link de recuperação';
+  }
+}
+
+async function resetPassword(e) {
+  e.preventDefault();
+  const pw1 = $('reset-password').value;
+  const pw2 = $('reset-password2').value;
+  const errEl = $('reset-error');
+  if (pw1 !== pw2) { errEl.textContent = 'As senhas não coincidem.'; errEl.classList.remove('hidden'); return; }
+  const token = new URLSearchParams(location.search).get('reset');
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  try {
+    await api('POST', '/api/reset-password', { token, password: pw1 });
+    errEl.className = ''; errEl.style.background='#e8f5e9'; errEl.style.color='#2e7d32'; errEl.style.border='1px solid #a5d6a7';
+    errEl.textContent = '✅ Senha redefinida! Redirecionando para o login...';
+    errEl.classList.remove('hidden');
+    // Limpa o token da URL e vai para login
+    setTimeout(() => { history.replaceState({}, '', '/'); showTab('login'); }, 2000);
+  } catch(err) {
+    errEl.style.background=''; errEl.style.color=''; errEl.style.border='';
+    errEl.textContent = err.message || 'Link inválido ou expirado.';
+    errEl.classList.remove('hidden');
+    btn.disabled = false; btn.textContent = 'Redefinir senha';
+  }
+}
+
+// Detectar token de reset na URL ao carregar
+(function checkResetToken() {
+  const token = new URLSearchParams(location.search).get('reset');
+  if (token) {
+    document.addEventListener('DOMContentLoaded', () => showTab('reset'), { once: true });
+    // fallback se DOM já carregou
+    if (document.readyState !== 'loading') showTab('reset');
+  }
+})();
 
 async function login(e) {
   e.preventDefault();

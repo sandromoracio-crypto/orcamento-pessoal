@@ -11,6 +11,50 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'orcamento-secret-key-mude-em-producao';
 const USE_PG = !!process.env.DATABASE_URL;
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+
+// ── Nodemailer (carregado dinamicamente) ──────────────────────
+let mailerTransport = null;
+async function getMailer() {
+  if (mailerTransport) return mailerTransport;
+  try {
+    const { default: nodemailer } = await import('nodemailer');
+    mailerTransport = nodemailer.createTransport({
+      host:   process.env.SMTP_HOST || 'smtp.gmail.com',
+      port:   parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+    return mailerTransport;
+  } catch { return null; }
+}
+
+async function sendResetEmail(email, name, token) {
+  const link = `${APP_URL}/?reset=${token}`;
+  const mailer = await getMailer();
+  if (!mailer || !process.env.SMTP_USER) {
+    // Dev fallback: log no console
+    console.log(`\n🔑 RESET LINK (dev): ${link}\n`);
+    return;
+  }
+  await mailer.sendMail({
+    from: `"Orçamento Pessoal" <${process.env.SMTP_USER}>`,
+    to: email,
+    subject: '🔑 Recuperação de senha — Orçamento Pessoal',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+        <h2 style="color:#2e7d32">Recuperar senha</h2>
+        <p>Olá, <strong>${name}</strong>!</p>
+        <p>Clique no botão abaixo para redefinir sua senha. O link expira em <strong>1 hora</strong>.</p>
+        <a href="${link}" style="display:inline-block;margin:1rem 0;padding:.75rem 1.5rem;background:#2e7d32;color:#fff;border-radius:8px;text-decoration:none;font-weight:700">Redefinir senha</a>
+        <p style="color:#666;font-size:.85rem">Se você não solicitou isso, ignore este e-mail.</p>
+        <p style="color:#aaa;font-size:.8rem">Link: ${link}</p>
+      </div>`,
+  });
+}
 
 // ── Database adapter: PostgreSQL (produção) ou SQLite (local) ─
 let pool, sqlite;
@@ -98,7 +142,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS category_limits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, category TEXT NOT NULL, limit_amount REAL NOT NULL DEFAULT 0, UNIQUE(user_id,category))`,
   `CREATE TABLE IF NOT EXISTS goals (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', target_amount REAL NOT NULL, saved_amount REAL NOT NULL DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS savings_accounts (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', color TEXT NOT NULL DEFAULT '#1b5e20', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
-  `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`
+  `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
 if (USE_PG) {
@@ -213,6 +258,45 @@ app.post('/api/login', async (req, res) => {
     return res.status(401).json({error:'E-mail ou senha incorretos'});
   const token = jwt.sign({id:user.id,name:user.name,email:user.email,is_admin:user.is_admin},JWT_SECRET,{expiresIn:'30d'});
   res.json({token,user:{id:user.id,name:user.name,email:user.email,is_admin:user.is_admin,must_change_password:user.must_change_password}});
+});
+
+// ── Forgot / Reset password ───────────────────────────────────
+app.post('/api/forgot-password', async (req,res) => {
+  const { email } = req.body||{};
+  if (!email) return res.status(400).json({error:'E-mail obrigatório'});
+  const user = await dbGet('SELECT id,name,email FROM users WHERE email=?',[email.toLowerCase()]);
+  // Sempre retorna 200 para não revelar se o e-mail existe
+  if (!user) return res.json({ok:true});
+  // Gera token único (32 bytes hex)
+  const { randomBytes } = await import('crypto');
+  const token = randomBytes(32).toString('hex');
+  // Expira em 1 hora
+  const expiresAt = USE_PG
+    ? `NOW() + INTERVAL '1 hour'`
+    : `datetime('now','+1 hour')`;
+  // Invalida tokens anteriores deste usuário
+  await dbRun('DELETE FROM password_reset_tokens WHERE user_id=?',[user.id]);
+  if (USE_PG) {
+    await rawQuery(`INSERT INTO password_reset_tokens (user_id,token,expires_at) VALUES ($1,$2,${expiresAt})`,[user.id,token]);
+  } else {
+    await dbInsert(`INSERT INTO password_reset_tokens (user_id,token,expires_at) VALUES (?,?,${expiresAt})`,[user.id,token]);
+  }
+  try { await sendResetEmail(user.email, user.name, token); } catch(e) { console.error('Erro ao enviar e-mail:', e.message); }
+  res.json({ok:true});
+});
+
+app.post('/api/reset-password', async (req,res) => {
+  const {token, password} = req.body||{};
+  if (!token||!password||password.length<6) return res.status(400).json({error:'Dados inválidos'});
+  const nowExprCheck = USE_PG ? 'NOW()' : "datetime('now')";
+  const row = USE_PG
+    ? (await rawQuery(`SELECT prt.*,u.id as uid FROM password_reset_tokens prt JOIN users u ON u.id=prt.user_id WHERE prt.token=$1 AND prt.used=0 AND prt.expires_at > ${nowExprCheck}`, [token]))[0]
+    : await dbGet(`SELECT prt.*,u.id as uid FROM password_reset_tokens prt JOIN users u ON u.id=prt.user_id WHERE prt.token=? AND prt.used=0 AND prt.expires_at > ${nowExprCheck}`, [token]);
+  if (!row) return res.status(400).json({error:'Link inválido ou expirado'});
+  const hash = bcrypt.hashSync(password,10);
+  await dbRun('UPDATE users SET password=?,must_change_password=0 WHERE id=?',[hash,row.user_id||row.uid]);
+  await dbRun('UPDATE password_reset_tokens SET used=1 WHERE token=?',[token]);
+  res.json({ok:true});
 });
 
 app.get('/api/me', auth, async (req,res) => {
