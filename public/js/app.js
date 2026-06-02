@@ -1209,8 +1209,9 @@ async function toggleIncomeDetails(id) {
 }
 
 async function renderHistory() {
-  const txs = await api('GET', '/api/transactions');
-  $('main-content').innerHTML = `<div class="table-card"><div class="table-header"><h3>Histórico geral por data do lançamento</h3><span style="font-size:.85rem;color:var(--gray-500)">${txs.length} registros</span></div>
+  const allTxs = await api('GET', '/api/transactions');
+  const txs = allTxs.slice(-20);
+  $('main-content').innerHTML = `<div class="table-card"><div class="table-header"><h3>Histórico geral por data do lançamento</h3><span style="font-size:.85rem;color:var(--gray-500)">Últimos ${txs.length} de ${allTxs.length} registros</span></div>
     ${txs.length===0?'<div class="empty-state"><div class="empty-icon">🧾</div><p>Sem lançamentos</p></div>':`<div style="overflow-x:auto"><table><thead><tr><th>Data</th><th>Competência</th><th>Descrição</th><th>Categoria</th><th>Pagamento/Fonte</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead><tbody>${txs.map(t => `<tr><td style="white-space:nowrap">${fmtDate(t.date)}</td><td>${monthLabel(t.effective_month || t.competence_month || t.date.slice(0,7))}</td><td>${t.description}${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}</td><td><span class="badge badge-blue">${t.category}</span></td><td>${pmBadgeHTML(t)}</td><td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td><td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td><td style="white-space:nowrap"><button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button><button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button></td></tr>`).join('')}</tbody></table></div>`}</div>`;
 }
 
