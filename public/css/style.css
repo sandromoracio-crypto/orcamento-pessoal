@@ -332,6 +332,58 @@ tr:hover td { background: var(--gray-50); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-page { display: flex; align-items: center; justify-content: center; height: 200px; }
 
+/* ── FAB button ──────────────────────────────────────────── */
+.fab-btn {
+  position: fixed; bottom: 2rem; right: 2rem;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--green); color: #fff;
+  border: none; font-size: 2rem; line-height: 1;
+  cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  z-index: 150; transition: background .2s, transform .15s, box-shadow .2s;
+  display: flex; align-items: center; justify-content: center;
+}
+.fab-btn:hover { background: var(--green-dark); transform: scale(1.08); box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+.fab-btn:active { transform: scale(.96); }
+
+/* ── Loading modal ───────────────────────────────────────── */
+.loading-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  z-index: 500; display: flex; align-items: center; justify-content: center;
+}
+.loading-modal {
+  background: #fff; border-radius: var(--radius);
+  padding: 2.5rem 2rem; width: 320px; text-align: center;
+  box-shadow: var(--shadow-lg);
+}
+.loading-icon { font-size: 2.8rem; margin-bottom: 1rem; }
+.loading-msg { font-size: .95rem; font-weight: 600; color: var(--gray-700); margin-bottom: 1.25rem; min-height: 1.4em; }
+.loading-bar-wrap { background: var(--gray-200); border-radius: 20px; height: 10px; overflow: hidden; margin-bottom: .6rem; }
+.loading-bar { height: 100%; background: var(--green); border-radius: 20px; width: 0%; transition: width .4s ease; }
+.loading-pct { font-size: .85rem; font-weight: 700; color: var(--green); }
+
+/* ── Confirmation modal rows ─────────────────────────────── */
+.confirm-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .55rem 0; border-bottom: 1px solid var(--gray-100); font-size: .9rem;
+}
+.confirm-row:last-of-type { border-bottom: none; }
+.confirm-row > span:first-child { color: var(--gray-500); font-size: .82rem; }
+
+/* ── Pagination ──────────────────────────────────────────── */
+.pagination {
+  display: flex; align-items: center; justify-content: center;
+  gap: .75rem; padding: .9rem 1.25rem;
+  border-top: 1px solid var(--gray-200); background: var(--gray-50);
+}
+.pagination button {
+  background: #fff; border: 1.5px solid var(--gray-300); border-radius: 8px;
+  padding: .4rem .9rem; font-size: .85rem; cursor: pointer;
+  color: var(--gray-700); transition: all .15s;
+}
+.pagination button:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.pagination button:disabled { opacity: .4; cursor: default; }
+.pagination .page-info { font-size: .85rem; color: var(--gray-500); white-space: nowrap; }
+
 /* ── Toast ───────────────────────────────────────────────── */
 #toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--gray-900); color: #fff; padding: .75rem 1.25rem; border-radius: 8px; font-size: .9rem; z-index: 999; transform: translateY(120%); transition: transform .3s ease; box-shadow: var(--shadow-lg); }
 #toast.show { transform: translateY(0); }

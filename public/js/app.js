@@ -10,12 +10,15 @@ const CAT_COLORS = ['#1565C0','#E65100','#6A1B9A','#B71C1C','#00838F','#F9A825',
 const PM_TYPES = { dinheiro: '💵 Dinheiro', pix: '⚡ PIX', credito: '💳 Crédito', debito: '🏧 Débito' };
 let paymentMethods = []; // cached list
 let savingsAccounts = []; // cached list
+let _historyPage = 1;
+let _txPage = 1;
+const PAGE_SIZE = 20;
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const fmtBRL = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-const applyTxFiltersDebounced = debounce(() => applyTxFilters(), 250);
+const applyTxFiltersDebounced = debounce(() => { _txPage = 1; applyTxFilters(); }, 250);
 const fmtPct = v => ((v||0)*100).toFixed(1) + '%';
 const fmtDate = s => s ? s.split('-').reverse().join('/') : '';
 const monthLabel = m => { const [y,mo] = m.split('-'); return MONTHS_PT[parseInt(mo)-1] + ' ' + y; };
@@ -483,6 +486,7 @@ async function renderDashboard() {
 let _allTxs = []; // cache for client-side filtering
 
 async function renderTransactions() {
+  _txPage = 1;
   _allTxs = await api('GET', `/api/transactions?month=${currentMonth}`);
 
   // Collect unique categories and payment methods for filter dropdowns
@@ -502,16 +506,16 @@ async function renderTransactions() {
       <!-- Filtros -->
       <div class="tx-filters" id="tx-filters">
         <input type="search" id="f-search" placeholder="🔍 Buscar descrição..." oninput="applyTxFiltersDebounced()" class="f-input">
-        <select id="f-type" onchange="applyTxFilters()" class="f-select">
+        <select id="f-type" onchange="_txPage=1;applyTxFilters()" class="f-select">
           <option value="">Tipo: Todos</option>
           <option value="Receita">💚 Receita</option>
           <option value="Despesa">❤️ Despesa</option>
         </select>
-        <select id="f-cat" onchange="applyTxFilters()" class="f-select">
+        <select id="f-cat" onchange="_txPage=1;applyTxFilters()" class="f-select">
           <option value="">Categoria: Todas</option>
           ${cats.map(c => `<option value="${c}">${c}</option>`).join('')}
         </select>
-        <select id="f-pm" onchange="applyTxFilters()" class="f-select">
+        <select id="f-pm" onchange="_txPage=1;applyTxFilters()" class="f-select">
           <option value="">Pagamento: Todos</option>
           ${pms.map(p => `<option value="${p}">${p}</option>`).join('')}
         </select>
@@ -557,6 +561,10 @@ function applyTxFilters() {
   const totR = filtered.filter(t=>t.type==='Receita').reduce((s,t)=>s+t.amount,0);
   const totD = filtered.filter(t=>t.type==='Despesa').reduce((s,t)=>s+t.amount,0);
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  if (_txPage > totalPages) _txPage = totalPages;
+  const pageItems = filtered.slice((_txPage - 1) * PAGE_SIZE, _txPage * PAGE_SIZE);
+
   wrap.innerHTML = `
     ${hasFilter ? `<div class="f-summary">
       <span>📋 ${filtered.length} de ${_allTxs.length} lançamentos</span>
@@ -566,7 +574,7 @@ function applyTxFilters() {
     <div style="overflow-x:auto"><table>
       <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead>
       <tbody>
-        ${filtered.map(t => `
+        ${pageItems.map(t => `
           <tr>
             <td style="white-space:nowrap">${fmtDate(t.date)}</td>
             <td>
@@ -585,13 +593,92 @@ function applyTxFilters() {
             </td>
           </tr>`).join('')}
       </tbody>
-    </table></div>`;
+    </table></div>
+    ${totalPages > 1 ? `<div class="pagination">
+      <button onclick="changeTxPage(-1)" ${_txPage<=1?'disabled':''}>‹ Anterior</button>
+      <span class="page-info">Página ${_txPage} de ${totalPages} · ${filtered.length} lançamentos</span>
+      <button onclick="changeTxPage(1)" ${_txPage>=totalPages?'disabled':''}>Próxima ›</button>
+    </div>` : ''}
+  `;
 }
 
 function clearTxFilters() {
   const ids = ['f-search','f-type','f-cat','f-pm'];
   ids.forEach(id => { const el = $(id); if (el) el.value = ''; });
+  _txPage = 1;
   applyTxFilters();
+}
+
+function changeTxPage(dir) {
+  _txPage += dir;
+  applyTxFilters();
+  $('tx-table-wrap')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function changeHistoryPage(dir) {
+  _historyPage += dir;
+  renderHistoryTable();
+}
+
+// ── Loading / Confirmation modals ─────────────────────────────
+let _loadingTimers = [];
+
+function showLoadingModal() {
+  const overlay = $('loading-overlay');
+  overlay.classList.remove('hidden');
+  $('loading-bar').style.width = '0%';
+  $('loading-pct').textContent = '0%';
+  $('loading-msg').textContent = 'Iniciando...';
+
+  const steps = [
+    { pct: 20, msg: 'Validando informações...', delay: 180 },
+    { pct: 50, msg: 'Registrando lançamento...', delay: 550 },
+    { pct: 80, msg: 'Atualizando carteiras...', delay: 950 },
+  ];
+  _loadingTimers.forEach(clearTimeout);
+  _loadingTimers = steps.map(({ pct, msg, delay }) =>
+    setTimeout(() => {
+      if (!overlay.classList.contains('hidden')) {
+        $('loading-bar').style.width = pct + '%';
+        $('loading-pct').textContent = pct + '%';
+        $('loading-msg').textContent = msg;
+      }
+    }, delay)
+  );
+}
+
+function hideLoadingModal(cb) {
+  _loadingTimers.forEach(clearTimeout);
+  $('loading-bar').style.width = '100%';
+  $('loading-pct').textContent = '100%';
+  $('loading-msg').textContent = 'Concluído! ✅';
+  setTimeout(() => {
+    $('loading-overlay').classList.add('hidden');
+    if (cb) cb();
+  }, 420);
+}
+
+function showTxConfirmModal(summary) {
+  const installLabel = summary.is_fixed
+    ? '🔄 Fixo mensal'
+    : summary.installments > 1 ? `${summary.installments} parcelas` : 'À vista';
+  const amtLabel = summary.installments > 1
+    ? `${fmtBRL(summary.amount)} <span style="font-size:.78rem;color:var(--gray-500)">(total)</span>`
+    : fmtBRL(summary.amount);
+
+  openModal('✅ Lançamento confirmado!', `
+    <div style="padding:.25rem 0 .5rem">
+      <div class="confirm-row"><span>Tipo</span><span class="badge ${summary.type==='Receita'?'badge-green':'badge-red'}">${summary.type}</span></div>
+      <div class="confirm-row"><span>Descrição</span><strong>${summary.desc}</strong></div>
+      <div class="confirm-row"><span>Valor</span><strong style="color:${summary.type==='Receita'?'var(--green)':'var(--red)'}">${amtLabel}</strong></div>
+      <div class="confirm-row"><span>Data</span>${fmtDate(summary.date)}</div>
+      <div class="confirm-row"><span>Categoria</span><span class="badge badge-blue">${summary.cat}</span></div>
+      <div class="confirm-row"><span>Parcelamento</span>${installLabel}</div>
+      <div class="modal-actions" style="margin-top:.75rem">
+        <button class="btn-secondary" onclick="closeModal();openAddTransaction()">+ Novo lançamento</button>
+        <button class="btn-primary" onclick="closeModal()">OK</button>
+      </div>
+    </div>`);
 }
 
 function pmBadgeHTML(t) {
@@ -819,46 +906,56 @@ async function openEditTransaction(id) {
 }
 
 async function saveNewTransaction() {
-  try {
-    let { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
-    if ($('tx-type').value === 'Receita') {
-      payment_type = 'receita';
-      payment_method_id = $('tx-income-source')?.value || null;
-    }
-    const installments = parseInt($('tx-installments')?.value) || 1;
-    const is_fixed = $('tx-fixed')?.checked || false;
-    const toSavings = $('tx-to-savings')?.checked || false;
-    const savingsAccId = $('tx-savings-acc')?.value;
+  // Captura resumo antes de fechar o modal
+  const summary = {
+    type: $('tx-type').value,
+    desc: $('tx-desc').value,
+    amount: parseFloat($('tx-amount').value) || 0,
+    date: $('tx-date').value,
+    cat: $('tx-cat').value,
+    installments: parseInt($('tx-installments')?.value) || 1,
+    is_fixed: $('tx-fixed')?.checked || false,
+  };
 
+  let { payment_type, payment_method_id } = parsePtypeValue($('tx-ptype')?.value);
+  if (summary.type === 'Receita') {
+    payment_type = 'receita';
+    payment_method_id = $('tx-income-source')?.value || null;
+  }
+  const toSavings = $('tx-to-savings')?.checked || false;
+  const savingsAccId = $('tx-savings-acc')?.value;
+
+  closeModal();
+  showLoadingModal();
+
+  try {
     const result = await api('POST', '/api/transactions', {
-      date: $('tx-date').value, description: $('tx-desc').value,
-      category: $('tx-cat').value, type: $('tx-type').value,
-      amount: $('tx-amount').value, note: $('tx-note').value,
+      date: summary.date, description: summary.desc,
+      category: summary.cat, type: summary.type,
+      amount: summary.amount, note: $('tx-note')?.value || '',
       payment_type, payment_method_id,
-      installments: is_fixed ? 1 : installments,
+      installments: summary.is_fixed ? 1 : summary.installments,
       amount_mode: $('tx-amount-mode')?.value || 'total',
-      is_fixed,
+      is_fixed: summary.is_fixed,
       competence_month: $('tx-competence')?.value || null
     });
 
-    // Se "guardar em cofrinho" marcado, cria depósito
     if (toSavings && savingsAccId) {
       const txId = result.id || (result.ids && result.ids[0]);
       await api('POST', `/api/savings/${savingsAccId}/deposits`, {
-        amount: $('tx-amount').value,
-        date: $('tx-date').value,
-        note: $('tx-desc').value,
-        transaction_id: txId
+        amount: summary.amount, date: summary.date,
+        note: summary.desc, transaction_id: txId
       });
       savingsAccounts = await api('GET', '/api/savings').catch(() => savingsAccounts);
     }
 
-    closeModal();
-    const msg = is_fixed ? '🔄 Lançamento fixo criado!' : installments > 1 ? `${installments} parcelas lançadas!` : 'Lançamento adicionado!';
-    toast(msg);
+    hideLoadingModal(() => showTxConfirmModal(summary));
     paymentMethods = await api('GET', '/api/payment-methods').catch(() => paymentMethods);
     renderTransactions(); loadSidebarPanels();
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) {
+    hideLoadingModal();
+    toast(e.message, 'error');
+  }
 }
 
 async function saveEditTransaction(id) {
@@ -1208,11 +1305,66 @@ async function toggleIncomeDetails(id) {
   el.classList.remove('hidden');
 }
 
+let _historyAllTxs = [];
+
 async function renderHistory() {
-  const allTxs = await api('GET', '/api/transactions');
-  const txs = allTxs.slice(-20);
-  $('main-content').innerHTML = `<div class="table-card"><div class="table-header"><h3>Histórico geral por data do lançamento</h3><span style="font-size:.85rem;color:var(--gray-500)">Últimos ${txs.length} de ${allTxs.length} registros</span></div>
-    ${txs.length===0?'<div class="empty-state"><div class="empty-icon">🧾</div><p>Sem lançamentos</p></div>':`<div style="overflow-x:auto"><table><thead><tr><th>Data</th><th>Competência</th><th>Descrição</th><th>Categoria</th><th>Pagamento/Fonte</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead><tbody>${txs.map(t => `<tr><td style="white-space:nowrap">${fmtDate(t.date)}</td><td>${monthLabel(t.effective_month || t.competence_month || t.date.slice(0,7))}</td><td>${t.description}${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}</td><td><span class="badge badge-blue">${t.category}</span></td><td>${pmBadgeHTML(t)}</td><td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td><td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td><td style="white-space:nowrap"><button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button><button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button></td></tr>`).join('')}</tbody></table></div>`}</div>`;
+  _historyPage = 1;
+  _historyAllTxs = await api('GET', '/api/transactions');
+  _historyAllTxs = [..._historyAllTxs].reverse(); // mais recentes primeiro
+
+  $('main-content').innerHTML = `<div class="table-card" id="history-table-card">
+    <div class="table-header">
+      <h3>Histórico geral por data do lançamento</h3>
+      <span id="history-page-info" style="font-size:.85rem;color:var(--gray-500)"></span>
+    </div>
+    <div id="history-table-wrap"></div>
+  </div>`;
+
+  renderHistoryTable();
+}
+
+function renderHistoryTable() {
+  const total = _historyAllTxs.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (_historyPage > totalPages) _historyPage = totalPages;
+  const txs = _historyAllTxs.slice((_historyPage - 1) * PAGE_SIZE, _historyPage * PAGE_SIZE);
+
+  const info = $('history-page-info');
+  if (info) info.textContent = `Página ${_historyPage} de ${totalPages} · ${total} registros`;
+
+  const wrap = $('history-table-wrap');
+  if (!wrap) return;
+
+  if (total === 0) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">🧾</div><p>Sem lançamentos</p></div>';
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Data</th><th>Competência</th><th>Descrição</th><th>Categoria</th><th>Pagamento/Fonte</th><th>Tipo</th><th style="text-align:right">Valor</th><th></th></tr></thead>
+      <tbody>
+        ${txs.map(t => `<tr>
+          <td style="white-space:nowrap">${fmtDate(t.date)}</td>
+          <td>${monthLabel(t.effective_month || t.competence_month || t.date.slice(0,7))}</td>
+          <td>${t.description}${t.installments>1?` <span class="inst-badge">${t.installment_number}/${t.installments}</span>`:''}${t.recurring_template_id?` <span class="fixed-badge">🔄 fixo</span>`:''}</td>
+          <td><span class="badge badge-blue">${t.category}</span></td>
+          <td>${pmBadgeHTML(t)}</td>
+          <td><span class="badge ${t.type==='Receita'?'badge-green':'badge-red'}">${t.type}</span></td>
+          <td style="text-align:right;font-weight:700;color:${t.type==='Receita'?'var(--green)':'var(--red)'}">${fmtBRL(t.amount)}</td>
+          <td style="white-space:nowrap">
+            <button class="btn-icon" onclick="openEditTransaction(${t.id})">✏️</button>
+            <button class="btn-icon" onclick="deleteTransaction(${t.id},'${t.group_id||''}','${t.recurring_template_id||''}')">🗑️</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${totalPages > 1 ? `<div class="pagination">
+      <button onclick="changeHistoryPage(-1)" ${_historyPage<=1?'disabled':''}>‹ Anterior</button>
+      <span class="page-info">Página ${_historyPage} de ${totalPages}</span>
+      <button onclick="changeHistoryPage(1)" ${_historyPage>=totalPages?'disabled':''}>Próxima ›</button>
+    </div>` : ''}
+  `;
 }
 
 async function renderUsers() {

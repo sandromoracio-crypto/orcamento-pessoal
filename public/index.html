@@ -151,6 +151,9 @@
   <!-- Overlay -->
   <div id="sidebar-overlay" class="sidebar-overlay hidden" onclick="toggleSidebar()"></div>
 
+  <!-- FAB: Novo Lançamento -->
+  <button id="fab-new-tx" class="fab-btn" onclick="openAddTransaction()" title="Novo Lançamento">+</button>
+
   <!-- Main content -->
   <div class="main-wrapper">
     <header class="topbar">
@@ -178,6 +181,18 @@
       <button onclick="closeModal()">✕</button>
     </div>
     <div id="modal-body"></div>
+  </div>
+</div>
+
+<!-- LOADING MODAL -->
+<div id="loading-overlay" class="loading-overlay hidden">
+  <div class="loading-modal">
+    <div class="loading-icon">💸</div>
+    <div id="loading-msg" class="loading-msg">Salvando...</div>
+    <div class="loading-bar-wrap">
+      <div id="loading-bar" class="loading-bar"></div>
+    </div>
+    <div id="loading-pct" class="loading-pct">0%</div>
   </div>
 </div>
 
