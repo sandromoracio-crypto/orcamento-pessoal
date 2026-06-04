@@ -392,3 +392,33 @@ tr:hover td { background: var(--gray-50); }
 #toast.show { transform: translateY(0); }
 #toast.success { background: var(--green); }
 #toast.error   { background: var(--red); }
+
+/* ── Shopping list ─────────────────────────────────────────── */
+.shopping-card { background:#fff; border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
+.shopping-intro { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1.25rem; border-bottom:1px solid var(--gray-200); }
+.shopping-intro h3 { font-size:1.1rem; margin-bottom:.2rem; }
+.shopping-intro p { color:var(--gray-500); font-size:.85rem; }
+.shopping-progress { background:var(--green-bg); color:var(--green-dark); border-radius:20px; padding:.35rem .75rem; font-size:.8rem; font-weight:700; white-space:nowrap; }
+.shopping-add-form { display:grid; grid-template-columns:minmax(180px, 1fr) minmax(130px, .45fr) auto; gap:.65rem; padding:1rem 1.25rem; background:var(--gray-50); border-bottom:1px solid var(--gray-200); }
+.shopping-add-form input { width:100%; padding:.7rem .85rem; border:1.5px solid var(--gray-300); border-radius:8px; font-size:.9rem; outline:none; }
+.shopping-add-form input:focus { border-color:var(--green); }
+.shopping-list { padding:.5rem 1.25rem; }
+.shopping-item { display:flex; align-items:center; gap:.8rem; padding:.8rem .25rem; border-bottom:1px solid var(--gray-100); }
+.shopping-item:last-child { border-bottom:none; }
+.shopping-item-info { display:flex; align-items:baseline; gap:.65rem; flex:1; min-width:0; }
+.shopping-item-info strong { font-size:.95rem; overflow-wrap:anywhere; }
+.shopping-item-info small { color:var(--gray-500); font-size:.78rem; }
+.shopping-item.purchased .shopping-item-info { opacity:.55; text-decoration:line-through; }
+.shopping-check input { position:absolute; opacity:0; pointer-events:none; }
+.shopping-check span { display:block; width:22px; height:22px; border:2px solid var(--gray-300); border-radius:7px; cursor:pointer; position:relative; }
+.shopping-check input:checked + span { background:var(--green); border-color:var(--green); }
+.shopping-check input:checked + span::after { content:'✓'; position:absolute; color:#fff; font-weight:800; left:4px; top:-2px; }
+.shopping-delete { opacity:.65; }
+.shopping-footer { display:flex; justify-content:flex-end; padding:.85rem 1.25rem; border-top:1px solid var(--gray-200); background:var(--gray-50); }
+.shopping-empty-hint { font-size:.82rem; margin-top:.3rem; }
+@media (max-width: 600px) {
+  .shopping-intro { align-items:flex-start; flex-direction:column; }
+  .shopping-add-form { grid-template-columns:1fr; }
+  .shopping-add-form .btn-primary { width:100%; }
+  .shopping-item-info { align-items:flex-start; flex-direction:column; gap:.1rem; }
+}

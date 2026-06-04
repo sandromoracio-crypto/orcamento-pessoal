@@ -148,7 +148,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS savings_accounts (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', color TEXT NOT NULL DEFAULT '#1b5e20', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
   `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
-  `CREATE TABLE IF NOT EXISTS reminders (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_at TEXT NOT NULL, done INT NOT NULL DEFAULT 0, cancelled INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
+  `CREATE TABLE IF NOT EXISTS reminders (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_at TEXT NOT NULL, done INT NOT NULL DEFAULT 0, cancelled INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS shopping_items (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, month TEXT NOT NULL, name TEXT NOT NULL, quantity TEXT DEFAULT '', purchased INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
 
@@ -163,6 +164,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_deposits_account   ON savings_deposits(account_id, user_id)',
   'CREATE INDEX IF NOT EXISTS idx_skips_template     ON recurring_skips(user_id, recurring_template_id, skip_month)',
   'CREATE INDEX IF NOT EXISTS idx_reset_token        ON password_reset_tokens(token)',
+  'CREATE INDEX IF NOT EXISTS idx_shopping_user_month ON shopping_items(user_id, month, purchased)',
 ];
 for (const idx of INDEXES) { try { await dbExec(idx); } catch { /* já existe */ } }
 
@@ -697,6 +699,44 @@ app.delete('/api/savings/deposits/:id', auth, async (req,res) => {
   const dep=await dbGet('SELECT * FROM savings_deposits WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
   if (!dep) return res.status(404).json({error:'Não encontrado'});
   await dbRun('DELETE FROM savings_deposits WHERE id=?',[req.params.id]);
+  res.json({ok:true});
+});
+
+// ── Shopping list ─────────────────────────────────────────────
+app.get('/api/shopping-items', auth, async (req,res) => {
+  const month = String(req.query.month || '');
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Mês inválido'});
+  res.json(await dbAll('SELECT * FROM shopping_items WHERE user_id=? AND month=? ORDER BY purchased, id',[req.user.id,month]));
+});
+
+app.post('/api/shopping-items', auth, async (req,res) => {
+  const month = String(req.body?.month || '');
+  const name = String(req.body?.name || '').trim();
+  const quantity = String(req.body?.quantity || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month) || !name) return res.status(400).json({error:'Mês e item são obrigatórios'});
+  const r = await dbInsert('INSERT INTO shopping_items (user_id,month,name,quantity) VALUES (?,?,?,?)',[req.user.id,month,name.slice(0,120),quantity.slice(0,40)]);
+  res.json({id:r.lastInsertRowid,month,name:name.slice(0,120),quantity:quantity.slice(0,40),purchased:0});
+});
+
+app.patch('/api/shopping-items/:id', auth, async (req,res) => {
+  const item = await dbGet('SELECT id FROM shopping_items WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
+  if (!item) return res.status(404).json({error:'Item não encontrado'});
+  if (req.body?.purchased === undefined) return res.status(400).json({error:'Status obrigatório'});
+  await dbRun('UPDATE shopping_items SET purchased=? WHERE id=?',[req.body.purchased?1:0,req.params.id]);
+  res.json({ok:true});
+});
+
+app.delete('/api/shopping-items/completed', auth, async (req,res) => {
+  const month = String(req.query.month || '');
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Mês inválido'});
+  await dbRun('DELETE FROM shopping_items WHERE user_id=? AND month=? AND purchased=1',[req.user.id,month]);
+  res.json({ok:true});
+});
+
+app.delete('/api/shopping-items/:id', auth, async (req,res) => {
+  const item = await dbGet('SELECT id FROM shopping_items WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
+  if (!item) return res.status(404).json({error:'Item não encontrado'});
+  await dbRun('DELETE FROM shopping_items WHERE id=?',[req.params.id]);
   res.json({ok:true});
 });
 

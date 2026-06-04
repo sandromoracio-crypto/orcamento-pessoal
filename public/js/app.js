@@ -10,15 +10,13 @@ const CAT_COLORS = ['#1565C0','#E65100','#6A1B9A','#B71C1C','#00838F','#F9A825',
 const PM_TYPES = { dinheiro: '💵 Dinheiro', pix: '⚡ PIX', credito: '💳 Crédito', debito: '🏧 Débito' };
 let paymentMethods = []; // cached list
 let savingsAccounts = []; // cached list
-<<<<<<< HEAD
 let _historyPage = 1;
 let _txPage = 1;
 const PAGE_SIZE = 20;
-=======
 let remindersList = [];
 let currentAlertReminder = null;
 let reminderPollInterval = null;
->>>>>>> 81c7c73 (feat: sistema de lembretes com notificação e modal de alerta)
+let shoppingItems = [];
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -28,6 +26,7 @@ const applyTxFiltersDebounced = debounce(() => { _txPage = 1; applyTxFilters(); 
 const fmtPct = v => ((v||0)*100).toFixed(1) + '%';
 const fmtDate = s => s ? s.split('-').reverse().join('/') : '';
 const monthLabel = m => { const [y,mo] = m.split('-'); return MONTHS_PT[parseInt(mo)-1] + ' ' + y; };
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 
 function toast(msg, type='success') {
   let el = $('toast');
@@ -324,8 +323,8 @@ async function loadSidebarPanels(only) {
 }
 
 // ── Navigation ────────────────────────────────────────────────
-const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, history: renderHistory, users: renderUsers, report: renderReport };
-const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', incomeSources: '💼 Proventos', savings: '🏦 Cofrinhos', goals: '🎯 Metas', history: '🧾 Histórico', users: '👥 Usuários', report: '📅 Relatório' };
+const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, shoppingList: renderShoppingList, history: renderHistory, users: renderUsers, report: renderReport };
+const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', incomeSources: '💼 Proventos', savings: '🏦 Cofrinhos', goals: '🎯 Metas', shoppingList: '🛒 Lista de mercado', history: '🧾 Histórico', users: '👥 Usuários', report: '📅 Relatório' };
 
 function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(el => { el.classList.remove('active'); el.dataset.page = el.getAttribute('onclick')?.match(/'(\w+)'/)?.[1]; });
@@ -1313,6 +1312,113 @@ async function toggleIncomeDetails(id) {
 }
 
 let _historyAllTxs = [];
+
+// ── Lista de mercado ─────────────────────────────────────────
+async function renderShoppingList() {
+  $('main-content').innerHTML = `
+    <div class="shopping-card">
+      <div class="shopping-intro">
+        <div>
+          <h3>Lista de ${monthLabel(currentMonth)}</h3>
+          <p>Adicione tudo o que precisar comprar neste mês.</p>
+        </div>
+        <div id="shopping-progress" class="shopping-progress">0 de 0 comprados</div>
+      </div>
+      <form class="shopping-add-form" onsubmit="addShoppingItem(event)">
+        <input id="shopping-name" type="text" placeholder="Ex.: Arroz, café, detergente..." maxlength="120" required>
+        <input id="shopping-quantity" type="text" placeholder="Quantidade (opcional)" maxlength="40">
+        <button class="btn-primary" type="submit">+ Adicionar</button>
+      </form>
+      <div id="shopping-list" class="shopping-list">
+        <div class="loading-page"><div class="spinner"></div></div>
+      </div>
+      <div id="shopping-footer" class="shopping-footer hidden">
+        <button class="btn-secondary" onclick="clearPurchasedShoppingItems()">Limpar comprados</button>
+      </div>
+    </div>`;
+
+  try {
+    shoppingItems = await api('GET', `/api/shopping-items?month=${currentMonth}`);
+    renderShoppingItems();
+    $('shopping-name')?.focus();
+  } catch(e) {
+    $('shopping-list').innerHTML = `<div class="empty-state"><p>${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderShoppingItems() {
+  const list = $('shopping-list');
+  if (!list) return;
+  const purchased = shoppingItems.filter(item => item.purchased).length;
+  $('shopping-progress').textContent = `${purchased} de ${shoppingItems.length} comprados`;
+  $('shopping-footer').classList.toggle('hidden', purchased === 0);
+
+  if (!shoppingItems.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">🛒</div><p>Sua lista deste mês está vazia.</p><p class="shopping-empty-hint">Adicione o primeiro item acima.</p></div>';
+    return;
+  }
+
+  list.innerHTML = shoppingItems.map(item => `
+    <div class="shopping-item${item.purchased ? ' purchased' : ''}">
+      <label class="shopping-check">
+        <input type="checkbox" ${item.purchased ? 'checked' : ''} onchange="toggleShoppingItem(${item.id}, this.checked)">
+        <span></span>
+      </label>
+      <div class="shopping-item-info">
+        <strong>${escapeHtml(item.name)}</strong>
+        ${item.quantity ? `<small>${escapeHtml(item.quantity)}</small>` : ''}
+      </div>
+      <button class="btn-icon shopping-delete" onclick="deleteShoppingItem(${item.id})" title="Remover item">🗑️</button>
+    </div>`).join('');
+}
+
+async function addShoppingItem(e) {
+  e.preventDefault();
+  const name = $('shopping-name').value.trim();
+  const quantity = $('shopping-quantity').value.trim();
+  if (!name) return;
+  const button = e.target.querySelector('button[type=submit]');
+  button.disabled = true;
+  try {
+    const item = await api('POST', '/api/shopping-items', { month: currentMonth, name, quantity });
+    shoppingItems.push(item);
+    renderShoppingItems();
+    e.target.reset();
+    $('shopping-name').focus();
+  } catch(err) {
+    toast(err.message || 'Erro ao adicionar item', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function toggleShoppingItem(id, purchased) {
+  try {
+    await api('PATCH', `/api/shopping-items/${id}`, { purchased });
+    shoppingItems = shoppingItems.map(item => item.id === id ? { ...item, purchased: purchased ? 1 : 0 } : item);
+    renderShoppingItems();
+  } catch(err) {
+    toast(err.message || 'Erro ao atualizar item', 'error');
+    renderShoppingItems();
+  }
+}
+
+async function deleteShoppingItem(id) {
+  try {
+    await api('DELETE', `/api/shopping-items/${id}`);
+    shoppingItems = shoppingItems.filter(item => item.id !== id);
+    renderShoppingItems();
+  } catch(err) { toast(err.message || 'Erro ao remover item', 'error'); }
+}
+
+async function clearPurchasedShoppingItems() {
+  try {
+    await api('DELETE', `/api/shopping-items/completed?month=${currentMonth}`);
+    shoppingItems = shoppingItems.filter(item => !item.purchased);
+    renderShoppingItems();
+    toast('Itens comprados removidos!');
+  } catch(err) { toast(err.message || 'Erro ao limpar itens', 'error'); }
+}
 
 async function renderHistory() {
   _historyPage = 1;
