@@ -149,7 +149,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS reminders (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_at TEXT NOT NULL, done INT NOT NULL DEFAULT 0, cancelled INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
-  `CREATE TABLE IF NOT EXISTS shopping_items (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, month TEXT NOT NULL, name TEXT NOT NULL, quantity TEXT DEFAULT '', purchased INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
+  `CREATE TABLE IF NOT EXISTS shopping_items (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, month TEXT NOT NULL, name TEXT NOT NULL, quantity TEXT DEFAULT '', purchased INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS shopping_shares (id ${idType} PRIMARY KEY${idExtra}, owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, shared_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT DEFAULT ${nowExpr}, UNIQUE(owner_id,shared_user_id))`
 ];
 for (const t of TABLES) await dbExec(t);
 
@@ -165,6 +166,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skips_template     ON recurring_skips(user_id, recurring_template_id, skip_month)',
   'CREATE INDEX IF NOT EXISTS idx_reset_token        ON password_reset_tokens(token)',
   'CREATE INDEX IF NOT EXISTS idx_shopping_user_month ON shopping_items(user_id, month, purchased)',
+  'CREATE INDEX IF NOT EXISTS idx_shopping_shares_user ON shopping_shares(shared_user_id, owner_id)',
 ];
 for (const idx of INDEXES) { try { await dbExec(idx); } catch { /* já existe */ } }
 
@@ -703,24 +705,61 @@ app.delete('/api/savings/deposits/:id', auth, async (req,res) => {
 });
 
 // ── Shopping list ─────────────────────────────────────────────
+async function canAccessShoppingList(userId, ownerId) {
+  if (Number(userId) === Number(ownerId)) return true;
+  return !!await dbGet('SELECT id FROM shopping_shares WHERE owner_id=? AND shared_user_id=?',[ownerId,userId]);
+}
+
+app.get('/api/shopping-lists', auth, async (req,res) => {
+  const shared = await dbAll(
+    'SELECT u.id,u.name,u.email FROM shopping_shares s JOIN users u ON u.id=s.owner_id WHERE s.shared_user_id=? ORDER BY u.name',
+    [req.user.id]
+  );
+  res.json([{id:req.user.id,name:req.user.name,email:req.user.email,is_owner:true}, ...shared.map(u => ({...u,is_owner:false}))]);
+});
+
+app.get('/api/shopping-share-candidates', auth, async (req,res) => {
+  res.json(await dbAll(
+    `SELECT u.id,u.name,u.email, CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS shared
+     FROM users u LEFT JOIN shopping_shares s ON s.owner_id=? AND s.shared_user_id=u.id
+     WHERE u.id<>? ORDER BY u.name,u.email`,
+    [req.user.id,req.user.id]
+  ));
+});
+
+app.put('/api/shopping-shares/:userId', auth, async (req,res) => {
+  const target = await dbGet('SELECT id FROM users WHERE id=?',[req.params.userId]);
+  if (!target || Number(target.id) === Number(req.user.id)) return res.status(404).json({error:'Usuário não encontrado'});
+  if (req.body?.shared) {
+    await dbRun('INSERT INTO shopping_shares (owner_id,shared_user_id) VALUES (?,?) ON CONFLICT DO NOTHING',[req.user.id,target.id]);
+  } else {
+    await dbRun('DELETE FROM shopping_shares WHERE owner_id=? AND shared_user_id=?',[req.user.id,target.id]);
+  }
+  res.json({ok:true});
+});
+
 app.get('/api/shopping-items', auth, async (req,res) => {
   const month = String(req.query.month || '');
+  const ownerId = Number(req.query.owner_id || req.user.id);
   if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Mês inválido'});
-  res.json(await dbAll('SELECT * FROM shopping_items WHERE user_id=? AND month=? ORDER BY purchased, id',[req.user.id,month]));
+  if (!await canAccessShoppingList(req.user.id,ownerId)) return res.status(403).json({error:'Sem acesso a esta lista'});
+  res.json(await dbAll('SELECT * FROM shopping_items WHERE user_id=? AND month=? ORDER BY purchased, id',[ownerId,month]));
 });
 
 app.post('/api/shopping-items', auth, async (req,res) => {
   const month = String(req.body?.month || '');
+  const ownerId = Number(req.body?.owner_id || req.user.id);
   const name = String(req.body?.name || '').trim();
   const quantity = String(req.body?.quantity || '').trim();
   if (!/^\d{4}-\d{2}$/.test(month) || !name) return res.status(400).json({error:'Mês e item são obrigatórios'});
-  const r = await dbInsert('INSERT INTO shopping_items (user_id,month,name,quantity) VALUES (?,?,?,?)',[req.user.id,month,name.slice(0,120),quantity.slice(0,40)]);
+  if (!await canAccessShoppingList(req.user.id,ownerId)) return res.status(403).json({error:'Sem acesso a esta lista'});
+  const r = await dbInsert('INSERT INTO shopping_items (user_id,month,name,quantity) VALUES (?,?,?,?)',[ownerId,month,name.slice(0,120),quantity.slice(0,40)]);
   res.json({id:r.lastInsertRowid,month,name:name.slice(0,120),quantity:quantity.slice(0,40),purchased:0});
 });
 
 app.patch('/api/shopping-items/:id', auth, async (req,res) => {
-  const item = await dbGet('SELECT id FROM shopping_items WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
-  if (!item) return res.status(404).json({error:'Item não encontrado'});
+  const item = await dbGet('SELECT id,user_id FROM shopping_items WHERE id=?',[req.params.id]);
+  if (!item || !await canAccessShoppingList(req.user.id,item.user_id)) return res.status(404).json({error:'Item não encontrado'});
   if (req.body?.purchased === undefined) return res.status(400).json({error:'Status obrigatório'});
   await dbRun('UPDATE shopping_items SET purchased=? WHERE id=?',[req.body.purchased?1:0,req.params.id]);
   res.json({ok:true});
@@ -728,14 +767,16 @@ app.patch('/api/shopping-items/:id', auth, async (req,res) => {
 
 app.delete('/api/shopping-items/completed', auth, async (req,res) => {
   const month = String(req.query.month || '');
+  const ownerId = Number(req.query.owner_id || req.user.id);
   if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Mês inválido'});
-  await dbRun('DELETE FROM shopping_items WHERE user_id=? AND month=? AND purchased=1',[req.user.id,month]);
+  if (!await canAccessShoppingList(req.user.id,ownerId)) return res.status(403).json({error:'Sem acesso a esta lista'});
+  await dbRun('DELETE FROM shopping_items WHERE user_id=? AND month=? AND purchased=1',[ownerId,month]);
   res.json({ok:true});
 });
 
 app.delete('/api/shopping-items/:id', auth, async (req,res) => {
-  const item = await dbGet('SELECT id FROM shopping_items WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
-  if (!item) return res.status(404).json({error:'Item não encontrado'});
+  const item = await dbGet('SELECT id,user_id FROM shopping_items WHERE id=?',[req.params.id]);
+  if (!item || !await canAccessShoppingList(req.user.id,item.user_id)) return res.status(404).json({error:'Item não encontrado'});
   await dbRun('DELETE FROM shopping_items WHERE id=?',[req.params.id]);
   res.json({ok:true});
 });

@@ -398,6 +398,9 @@ tr:hover td { background: var(--gray-50); }
 .shopping-intro { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1.25rem; border-bottom:1px solid var(--gray-200); }
 .shopping-intro h3 { font-size:1.1rem; margin-bottom:.2rem; }
 .shopping-intro p { color:var(--gray-500); font-size:.85rem; }
+.shopping-heading-actions { display:flex; align-items:center; justify-content:flex-end; gap:.55rem; flex-wrap:wrap; }
+.shopping-owner-select { padding:.5rem .7rem; border:1.5px solid var(--gray-300); border-radius:8px; background:#fff; color:var(--gray-700); font-size:.85rem; outline:none; }
+.shopping-owner-select:focus { border-color:var(--green); }
 .shopping-progress { background:var(--green-bg); color:var(--green-dark); border-radius:20px; padding:.35rem .75rem; font-size:.8rem; font-weight:700; white-space:nowrap; }
 .shopping-add-form { display:grid; grid-template-columns:minmax(180px, 1fr) minmax(130px, .45fr) auto; gap:.65rem; padding:1rem 1.25rem; background:var(--gray-50); border-bottom:1px solid var(--gray-200); }
 .shopping-add-form input { width:100%; padding:.7rem .85rem; border:1.5px solid var(--gray-300); border-radius:8px; font-size:.9rem; outline:none; }
@@ -416,8 +419,17 @@ tr:hover td { background: var(--gray-50); }
 .shopping-delete { opacity:.65; }
 .shopping-footer { display:flex; justify-content:flex-end; padding:.85rem 1.25rem; border-top:1px solid var(--gray-200); background:var(--gray-50); }
 .shopping-empty-hint { font-size:.82rem; margin-top:.3rem; }
+.shopping-share-help { color:var(--gray-700); font-size:.88rem; }
+.shopping-share-list { display:flex; flex-direction:column; gap:.5rem; max-height:360px; overflow-y:auto; }
+.shopping-share-user { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.75rem; border:1px solid var(--gray-200); border-radius:8px; cursor:pointer; }
+.shopping-share-user:hover { background:var(--gray-50); }
+.shopping-share-user span { display:flex; flex-direction:column; min-width:0; }
+.shopping-share-user small { color:var(--gray-500); overflow:hidden; text-overflow:ellipsis; }
+.shopping-share-user input { width:18px; height:18px; accent-color:var(--green); flex-shrink:0; }
 @media (max-width: 600px) {
   .shopping-intro { align-items:flex-start; flex-direction:column; }
+  .shopping-heading-actions { justify-content:flex-start; width:100%; }
+  .shopping-owner-select { flex:1; }
   .shopping-add-form { grid-template-columns:1fr; }
   .shopping-add-form .btn-primary { width:100%; }
   .shopping-item-info { align-items:flex-start; flex-direction:column; gap:.1rem; }

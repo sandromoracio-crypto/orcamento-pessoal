@@ -17,6 +17,8 @@ let remindersList = [];
 let currentAlertReminder = null;
 let reminderPollInterval = null;
 let shoppingItems = [];
+let shoppingLists = [];
+let activeShoppingOwnerId = null;
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -1315,14 +1317,19 @@ let _historyAllTxs = [];
 
 // ── Lista de mercado ─────────────────────────────────────────
 async function renderShoppingList() {
+  activeShoppingOwnerId = activeShoppingOwnerId || currentUser.id;
   $('main-content').innerHTML = `
     <div class="shopping-card">
       <div class="shopping-intro">
         <div>
-          <h3>Lista de ${monthLabel(currentMonth)}</h3>
+          <h3 id="shopping-list-title">Lista de ${monthLabel(currentMonth)}</h3>
           <p>Adicione tudo o que precisar comprar neste mês.</p>
         </div>
-        <div id="shopping-progress" class="shopping-progress">0 de 0 comprados</div>
+        <div class="shopping-heading-actions">
+          <select id="shopping-owner-select" class="shopping-owner-select" onchange="changeShoppingList(this.value)"></select>
+          <button id="shopping-share-btn" class="btn-secondary" onclick="openShoppingShareManager()">Compartilhar</button>
+          <div id="shopping-progress" class="shopping-progress">0 de 0 comprados</div>
+        </div>
       </div>
       <form class="shopping-add-form" onsubmit="addShoppingItem(event)">
         <input id="shopping-name" type="text" placeholder="Ex.: Arroz, café, detergente..." maxlength="120" required>
@@ -1338,12 +1345,37 @@ async function renderShoppingList() {
     </div>`;
 
   try {
-    shoppingItems = await api('GET', `/api/shopping-items?month=${currentMonth}`);
-    renderShoppingItems();
+    shoppingLists = await api('GET', '/api/shopping-lists');
+    if (!shoppingLists.some(list => Number(list.id) === Number(activeShoppingOwnerId))) activeShoppingOwnerId = currentUser.id;
+    renderShoppingListSelector();
+    await loadShoppingItems();
     $('shopping-name')?.focus();
   } catch(e) {
     $('shopping-list').innerHTML = `<div class="empty-state"><p>${escapeHtml(e.message)}</p></div>`;
   }
+}
+
+function renderShoppingListSelector() {
+  const select = $('shopping-owner-select');
+  if (!select) return;
+  select.innerHTML = shoppingLists.map(list =>
+    `<option value="${list.id}" ${Number(list.id) === Number(activeShoppingOwnerId) ? 'selected' : ''}>${list.is_owner ? 'Minha lista' : `Lista de ${escapeHtml(list.name)}`}</option>`
+  ).join('');
+  const active = shoppingLists.find(list => Number(list.id) === Number(activeShoppingOwnerId));
+  $('shopping-list-title').textContent = `${active?.is_owner ? 'Minha lista' : `Lista de ${active?.name || ''}`} · ${monthLabel(currentMonth)}`;
+  $('shopping-share-btn').classList.toggle('hidden', Number(activeShoppingOwnerId) !== Number(currentUser.id));
+}
+
+async function changeShoppingList(ownerId) {
+  activeShoppingOwnerId = Number(ownerId);
+  renderShoppingListSelector();
+  await loadShoppingItems();
+}
+
+async function loadShoppingItems() {
+  $('shopping-list').innerHTML = '<div class="loading-page"><div class="spinner"></div></div>';
+  shoppingItems = await api('GET', `/api/shopping-items?month=${currentMonth}&owner_id=${activeShoppingOwnerId}`);
+  renderShoppingItems();
 }
 
 function renderShoppingItems() {
@@ -1380,7 +1412,7 @@ async function addShoppingItem(e) {
   const button = e.target.querySelector('button[type=submit]');
   button.disabled = true;
   try {
-    const item = await api('POST', '/api/shopping-items', { month: currentMonth, name, quantity });
+    const item = await api('POST', '/api/shopping-items', { month: currentMonth, owner_id: activeShoppingOwnerId, name, quantity });
     shoppingItems.push(item);
     renderShoppingItems();
     e.target.reset();
@@ -1413,11 +1445,40 @@ async function deleteShoppingItem(id) {
 
 async function clearPurchasedShoppingItems() {
   try {
-    await api('DELETE', `/api/shopping-items/completed?month=${currentMonth}`);
+    await api('DELETE', `/api/shopping-items/completed?month=${currentMonth}&owner_id=${activeShoppingOwnerId}`);
     shoppingItems = shoppingItems.filter(item => !item.purchased);
     renderShoppingItems();
     toast('Itens comprados removidos!');
   } catch(err) { toast(err.message || 'Erro ao limpar itens', 'error'); }
+}
+
+async function openShoppingShareManager() {
+  if (Number(activeShoppingOwnerId) !== Number(currentUser.id)) return;
+  try {
+    const users = await api('GET', '/api/shopping-share-candidates');
+    openModal('Compartilhar lista de mercado', `
+      <div class="modal-form">
+        <p class="shopping-share-help">Escolha quem poderá adicionar, marcar e remover itens da sua lista em todos os meses.</p>
+        <div class="shopping-share-list">
+          ${users.length ? users.map(user => `
+            <label class="shopping-share-user">
+              <span><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(user.email)}</small></span>
+              <input type="checkbox" ${user.shared ? 'checked' : ''} onchange="toggleShoppingShare(${user.id}, this.checked)">
+            </label>`).join('') : '<p class="text-gray">Nenhum outro usuário cadastrado.</p>'}
+        </div>
+        <div class="modal-actions"><button class="btn-primary" onclick="closeModal()">Concluir</button></div>
+      </div>`);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleShoppingShare(userId, shared) {
+  try {
+    await api('PUT', `/api/shopping-shares/${userId}`, { shared });
+    toast(shared ? 'Lista compartilhada!' : 'Acesso removido!');
+  } catch(e) {
+    toast(e.message, 'error');
+    openShoppingShareManager();
+  }
 }
 
 async function renderHistory() {
