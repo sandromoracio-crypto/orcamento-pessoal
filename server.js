@@ -138,7 +138,7 @@ const idExtra = USE_PG ? ''        : ' AUTOINCREMENT';
 const nowExpr = USE_PG ? "to_char(now(),'YYYY-MM-DD HH24:MI:SS')" : "(datetime('now'))";
 
 const TABLES = [
-  `CREATE TABLE IF NOT EXISTS users (id ${idType} PRIMARY KEY${idExtra}, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, is_admin INT NOT NULL DEFAULT 0, must_change_password INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS users (id ${idType} PRIMARY KEY${idExtra}, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, is_admin INT NOT NULL DEFAULT 0, must_change_password INT NOT NULL DEFAULT 0, is_active INT NOT NULL DEFAULT 1, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS payment_methods (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'credito', color TEXT NOT NULL DEFAULT '#2e7d32', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
   `CREATE TABLE IF NOT EXISTS recurring_templates (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, description TEXT NOT NULL, category TEXT NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, note TEXT DEFAULT '', payment_type TEXT DEFAULT 'dinheiro', payment_method_id INT REFERENCES payment_methods(id) ON DELETE SET NULL, active INT NOT NULL DEFAULT 1, start_month TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS recurring_skips (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, recurring_template_id INT NOT NULL REFERENCES recurring_templates(id) ON DELETE CASCADE, skip_month TEXT NOT NULL, created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,recurring_template_id,skip_month))`,
@@ -174,6 +174,7 @@ if (USE_PG) {
   await dbExec(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INT NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password INT NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INT NOT NULL DEFAULT 1;
   `);
 }
 
@@ -196,6 +197,7 @@ if (!USE_PG) {
   const userMigrations = [
     ['is_admin', 'ALTER TABLE users ADD COLUMN is_admin INT NOT NULL DEFAULT 0'],
     ['must_change_password', 'ALTER TABLE users ADD COLUMN must_change_password INT NOT NULL DEFAULT 0'],
+    ['is_active', 'ALTER TABLE users ADD COLUMN is_active INT NOT NULL DEFAULT 1'],
   ];
   for (const [col,sql] of userMigrations) {
     if (!userCols.includes(col)) { sqlite.exec(sql); console.log(`Migration users: +${col}`); }
@@ -242,15 +244,20 @@ app.use('/js',     express.static(join(__dirname,'public','js'),     { maxAge:'1
 app.use('/vendor', express.static(join(__dirname,'public','vendor'), { maxAge:'30d', etag:true }));
 app.use(express.static(join(__dirname, 'public'), { etag:true }));
 
-function auth(req, res, next) {
+async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error:'Token necessário' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    const user = await dbGet('SELECT is_active FROM users WHERE id=?',[req.user.id]);
+    if (!user?.is_active) return res.status(403).json({error:'Usuário inativo. Procure o administrador.'});
+    next();
+  }
   catch { res.status(401).json({ error:'Token inválido' }); }
 }
 async function requireAdmin(req, res, next) {
-  const user = await dbGet('SELECT is_admin FROM users WHERE id=?',[req.user.id]);
-  if (!user?.is_admin) return res.status(403).json({error:'Acesso restrito ao administrador'});
+  const user = await dbGet('SELECT is_admin,is_active FROM users WHERE id=?',[req.user.id]);
+  if (!user?.is_admin || !user?.is_active) return res.status(403).json({error:'Acesso restrito ao administrador'});
   next();
 }
 function tempPassword() {
@@ -285,6 +292,7 @@ app.post('/api/login', async (req, res) => {
   const user = await dbGet('SELECT * FROM users WHERE email=?',[email?.toLowerCase()]);
   if (!user||!bcrypt.compareSync(password,user.password))
     return res.status(401).json({error:'E-mail ou senha incorretos'});
+  if (!user.is_active) return res.status(403).json({error:'Usuário inativo. Procure o administrador.'});
   const token = jwt.sign({id:user.id,name:user.name,email:user.email,is_admin:user.is_admin},JWT_SECRET,{expiresIn:'30d'});
   res.json({token,user:{id:user.id,name:user.name,email:user.email,is_admin:user.is_admin,must_change_password:user.must_change_password}});
 });
@@ -293,7 +301,7 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/forgot-password', async (req,res) => {
   const { email } = req.body||{};
   if (!email) return res.status(400).json({error:'E-mail obrigatório'});
-  const user = await dbGet('SELECT id,name,email FROM users WHERE email=?',[email.toLowerCase()]);
+  const user = await dbGet('SELECT id,name,email FROM users WHERE email=? AND is_active=1',[email.toLowerCase()]);
   // Sempre retorna 200 para não revelar se o e-mail existe
   if (!user) return res.json({ok:true});
   // Gera token único (32 bytes hex)
@@ -344,7 +352,7 @@ app.put('/api/change-password', auth, async (req,res) => {
   res.json({ok:true});
 });
 app.get('/api/users', auth, requireAdmin, async (req,res) => {
-  res.json(await dbAll('SELECT id,name,email,is_admin,must_change_password,created_at FROM users ORDER BY name'));
+  res.json(await dbAll('SELECT id,name,email,is_admin,must_change_password,is_active,created_at FROM users ORDER BY name'));
 });
 app.post('/api/users', auth, requireAdmin, async (req,res) => {
   const {name,email,is_admin}=req.body||{};
@@ -712,7 +720,7 @@ async function canAccessShoppingList(userId, ownerId) {
 
 app.get('/api/shopping-lists', auth, async (req,res) => {
   const shared = await dbAll(
-    'SELECT u.id,u.name,u.email FROM shopping_shares s JOIN users u ON u.id=s.owner_id WHERE s.shared_user_id=? ORDER BY u.name',
+    'SELECT u.id,u.name,u.email FROM shopping_shares s JOIN users u ON u.id=s.owner_id WHERE s.shared_user_id=? AND u.is_active=1 ORDER BY u.name',
     [req.user.id]
   );
   res.json([{id:req.user.id,name:req.user.name,email:req.user.email,is_owner:true}, ...shared.map(u => ({...u,is_owner:false}))]);
@@ -722,7 +730,7 @@ app.get('/api/shopping-share-candidates', auth, async (req,res) => {
   res.json(await dbAll(
     `SELECT u.id,u.name,u.email, CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS shared
      FROM users u LEFT JOIN shopping_shares s ON s.owner_id=? AND s.shared_user_id=u.id
-     WHERE u.id<>? ORDER BY u.name,u.email`,
+     WHERE u.id<>? AND u.is_active=1 ORDER BY u.name,u.email`,
     [req.user.id,req.user.id]
   ));
 });
@@ -735,6 +743,13 @@ app.put('/api/shopping-shares/:userId', auth, async (req,res) => {
   } else {
     await dbRun('DELETE FROM shopping_shares WHERE owner_id=? AND shared_user_id=?',[req.user.id,target.id]);
   }
+  res.json({ok:true});
+});
+app.put('/api/users/:id/active', auth, requireAdmin, async (req,res) => {
+  if (parseInt(req.params.id) === req.user.id) return res.status(400).json({error:'Não é possível inativar seu próprio usuário'});
+  const user = await dbGet('SELECT id FROM users WHERE id=?',[req.params.id]);
+  if (!user) return res.status(404).json({error:'Usuário não encontrado'});
+  await dbRun('UPDATE users SET is_active=? WHERE id=?',[req.body?.is_active?1:0,req.params.id]);
   res.json({ok:true});
 });
 
