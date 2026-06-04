@@ -150,7 +150,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS reminders (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_at TEXT NOT NULL, done INT NOT NULL DEFAULT 0, cancelled INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS shopping_items (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, month TEXT NOT NULL, name TEXT NOT NULL, quantity TEXT DEFAULT '', purchased INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
-  `CREATE TABLE IF NOT EXISTS shopping_shares (id ${idType} PRIMARY KEY${idExtra}, owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, shared_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT DEFAULT ${nowExpr}, UNIQUE(owner_id,shared_user_id))`
+  `CREATE TABLE IF NOT EXISTS shopping_shares (id ${idType} PRIMARY KEY${idExtra}, owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, shared_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT DEFAULT ${nowExpr}, UNIQUE(owner_id,shared_user_id))`,
+  `CREATE TABLE IF NOT EXISTS user_charges (id ${idType} PRIMARY KEY${idExtra}, requester_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, recipient_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, description TEXT NOT NULL, charge_type TEXT NOT NULL, amount REAL NOT NULL, due_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', expense_transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, income_transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, responded_at TEXT, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
 
@@ -167,6 +168,8 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_reset_token        ON password_reset_tokens(token)',
   'CREATE INDEX IF NOT EXISTS idx_shopping_user_month ON shopping_items(user_id, month, purchased)',
   'CREATE INDEX IF NOT EXISTS idx_shopping_shares_user ON shopping_shares(shared_user_id, owner_id)',
+  'CREATE INDEX IF NOT EXISTS idx_charges_recipient_status ON user_charges(recipient_id, status, due_date)',
+  'CREATE INDEX IF NOT EXISTS idx_charges_requester ON user_charges(requester_id, created_at)',
 ];
 for (const idx of INDEXES) { try { await dbExec(idx); } catch { /* já existe */ } }
 
@@ -794,6 +797,103 @@ app.delete('/api/shopping-items/:id', auth, async (req,res) => {
   if (!item || !await canAccessShoppingList(req.user.id,item.user_id)) return res.status(404).json({error:'Item não encontrado'});
   await dbRun('DELETE FROM shopping_items WHERE id=?',[req.params.id]);
   res.json({ok:true});
+});
+
+// ── Charges between users ─────────────────────────────────────
+app.get('/api/charge-users', auth, async (req,res) => {
+  res.json(await dbAll('SELECT id,name,email FROM users WHERE id<>? AND is_active=1 ORDER BY name,email',[req.user.id]));
+});
+
+app.get('/api/charges', auth, async (req,res) => {
+  const incoming = await dbAll(
+    `SELECT c.*,u.name AS requester_name,u.email AS requester_email
+     FROM user_charges c JOIN users u ON u.id=c.requester_id
+     WHERE c.recipient_id=? ORDER BY CASE c.status WHEN 'pending' THEN 0 ELSE 1 END,c.due_date DESC,c.id DESC`,
+    [req.user.id]
+  );
+  const outgoing = await dbAll(
+    `SELECT c.*,u.name AS recipient_name,u.email AS recipient_email
+     FROM user_charges c JOIN users u ON u.id=c.recipient_id
+     WHERE c.requester_id=? ORDER BY CASE c.status WHEN 'pending' THEN 0 ELSE 1 END,c.due_date DESC,c.id DESC`,
+    [req.user.id]
+  );
+  res.json({incoming,outgoing});
+});
+
+app.get('/api/charges/pending-count', auth, async (req,res) => {
+  const row = await dbGet("SELECT COUNT(*) AS total FROM user_charges WHERE recipient_id=? AND status='pending'",[req.user.id]);
+  res.json({total:parseInt(row?.total||0)});
+});
+
+app.post('/api/charges', auth, async (req,res) => {
+  const recipientId = parseInt(req.body?.recipient_id);
+  const description = String(req.body?.description||'').trim();
+  const chargeType = String(req.body?.charge_type||'').trim();
+  const amount = parseFloat(req.body?.amount);
+  const dueDate = String(req.body?.due_date||'');
+  const recipient = await dbGet('SELECT id FROM users WHERE id=? AND is_active=1',[recipientId]);
+  if (!recipient || recipientId===req.user.id) return res.status(400).json({error:'Destinatário inválido'});
+  if (!description || !chargeType || !(amount>0) || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate))
+    return res.status(400).json({error:'Preencha destinatário, cobrança, tipo, valor e vencimento'});
+  const r = await dbInsert(
+    'INSERT INTO user_charges (requester_id,recipient_id,description,charge_type,amount,due_date) VALUES (?,?,?,?,?,?)',
+    [req.user.id,recipientId,description.slice(0,120),chargeType.slice(0,80),amount,dueDate]
+  );
+  res.json({id:r.lastInsertRowid});
+});
+
+app.patch('/api/charges/:id/reject', auth, async (req,res) => {
+  const charge = await dbGet("SELECT id FROM user_charges WHERE id=? AND recipient_id=? AND status='pending'",[req.params.id,req.user.id]);
+  if (!charge) return res.status(404).json({error:'Cobrança pendente não encontrada'});
+  await dbRun(`UPDATE user_charges SET status='rejected',responded_at=${nowExpr} WHERE id=?`,[charge.id]);
+  res.json({ok:true});
+});
+
+app.post('/api/charges/:id/accept', auth, async (req,res) => {
+  const charge = await dbGet(
+    `SELECT c.*,requester.name AS requester_name,recipient.name AS recipient_name
+     FROM user_charges c JOIN users requester ON requester.id=c.requester_id JOIN users recipient ON recipient.id=c.recipient_id
+     WHERE c.id=? AND c.recipient_id=? AND c.status='pending'`,
+    [req.params.id,req.user.id]
+  );
+  if (!charge) return res.status(404).json({error:'Cobrança pendente não encontrada'});
+  const category = String(req.body?.category||'').trim();
+  const date = String(req.body?.date||charge.due_date);
+  const competence = String(req.body?.competence_month||date.slice(0,7));
+  const paymentType = String(req.body?.payment_type||'dinheiro');
+  const paymentMethodId = req.body?.payment_method_id||null;
+  if (!category || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({error:'Data e categoria são obrigatórias'});
+  if (paymentMethodId) {
+    const pm = await dbGet('SELECT id FROM payment_methods WHERE id=? AND user_id=?',[paymentMethodId,req.user.id]);
+    if (!pm) return res.status(400).json({error:'Forma de pagamento inválida'});
+  }
+  const comp = competence!==date.slice(0,7)?competence:null;
+  const expenseDesc = `${charge.description} — cobrança de ${charge.requester_name}`;
+  const incomeDesc = `${charge.description} — recebido de ${charge.recipient_name}`;
+  const note = `Cobrança: ${charge.charge_type}`;
+  let expenseId, incomeId;
+  try {
+    const lock = await dbRun("UPDATE user_charges SET status='processing' WHERE id=? AND recipient_id=? AND status='pending'",[charge.id,req.user.id]);
+    if (Number(lock?.changes??lock?.rowCount??0)===0) return res.status(409).json({error:'Cobrança já respondida'});
+    const expense = await dbInsert(
+      'INSERT INTO transactions (user_id,date,description,category,type,amount,note,payment_type,payment_method_id,installments,installment_number,competence_month) VALUES (?,?,?,?,?,?,?,?,?,1,1,?)',
+      [req.user.id,date,expenseDesc,category,'Despesa',charge.amount,note,paymentType,paymentMethodId,comp]
+    );
+    expenseId=expense.lastInsertRowid;
+    const income = await dbInsert(
+      'INSERT INTO transactions (user_id,date,description,category,type,amount,note,payment_type,installments,installment_number,competence_month) VALUES (?,?,?,?,?,?,?,?,1,1,?)',
+      [charge.requester_id,date,incomeDesc,'Receita','Receita',charge.amount,note,'receita',comp]
+    );
+    incomeId=income.lastInsertRowid;
+    await dbRun(`UPDATE user_charges SET status='accepted',expense_transaction_id=?,income_transaction_id=?,responded_at=${nowExpr} WHERE id=?`,[expenseId,incomeId,charge.id]);
+    res.json({ok:true,expense_transaction_id:expenseId,income_transaction_id:incomeId});
+  } catch(e) {
+    if (expenseId) await dbRun('DELETE FROM transactions WHERE id=?',[expenseId]).catch(()=>{});
+    if (incomeId) await dbRun('DELETE FROM transactions WHERE id=?',[incomeId]).catch(()=>{});
+    await dbRun("UPDATE user_charges SET status='pending' WHERE id=? AND status='processing'",[charge.id]).catch(()=>{});
+    console.error(e);
+    res.status(500).json({error:'Não foi possível aceitar a cobrança'});
+  }
 });
 
 // ── Reminders ─────────────────────────────────────────────────

@@ -19,6 +19,8 @@ let reminderPollInterval = null;
 let shoppingItems = [];
 let shoppingLists = [];
 let activeShoppingOwnerId = null;
+let chargePollInterval = null;
+let currentCharges = { incoming:[], outgoing:[] };
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -197,6 +199,7 @@ async function bootApp() {
   loadSidebarPanels();
   navigate('dashboard');
   startReminderPolling();
+  startChargePolling();
 }
 
 // ── Month navigation ─────────────────────────────────────────
@@ -325,8 +328,8 @@ async function loadSidebarPanels(only) {
 }
 
 // ── Navigation ────────────────────────────────────────────────
-const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, shoppingList: renderShoppingList, history: renderHistory, users: renderUsers, report: renderReport };
-const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', incomeSources: '💼 Proventos', savings: '🏦 Cofrinhos', goals: '🎯 Metas', shoppingList: '🛒 Lista de mercado', history: '🧾 Histórico', users: '👥 Usuários', report: '📅 Relatório' };
+const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, charges: renderCharges, shoppingList: renderShoppingList, history: renderHistory, users: renderUsers, report: renderReport };
+const pageTitles = { dashboard: '📊 Dashboard', transactions: '💸 Lançamentos', categories: '📋 Categorias', cards: '💳 Cartões', incomeSources: '💼 Proventos', savings: '🏦 Cofrinhos', goals: '🎯 Metas', charges: '💲 Cobranças', shoppingList: '🛒 Lista de mercado', history: '🧾 Histórico', users: '👥 Usuários', report: '📅 Relatório' };
 
 function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(el => { el.classList.remove('active'); el.dataset.page = el.getAttribute('onclick')?.match(/'(\w+)'/)?.[1]; });
@@ -1314,6 +1317,124 @@ async function toggleIncomeDetails(id) {
 }
 
 let _historyAllTxs = [];
+
+// ── Cobranças entre usuários ──────────────────────────────────
+const chargeStatusLabel = status => ({
+  pending:'Pendente', accepted:'Aceita', rejected:'Recusada', processing:'Processando'
+}[status] || status);
+const chargeStatusBadge = status => ({
+  pending:'badge-orange', accepted:'badge-green', rejected:'badge-red', processing:'badge-blue'
+}[status] || 'badge-blue');
+
+async function renderCharges() {
+  $('main-content').innerHTML = '<div class="loading-page"><div class="spinner"></div></div>';
+  try {
+    const data = await api('GET','/api/charges');
+    currentCharges = data;
+    $('main-content').innerHTML = `
+      <div class="charges-toolbar">
+        <div><h3>Cobranças entre usuários</h3><p>Envie cobranças e classifique as que você receber.</p></div>
+        <button class="btn-primary" onclick="openNewCharge()">+ Nova cobrança</button>
+      </div>
+      <div class="charges-grid">
+        <div class="table-card">
+          <div class="table-header"><h3>Recebidas</h3><span class="badge badge-orange">${data.incoming.filter(c=>c.status==='pending').length} pendentes</span></div>
+          <div class="charge-list">${data.incoming.length ? data.incoming.map(incomingChargeHTML).join('') : chargeEmptyHTML('Nenhuma cobrança recebida.')}</div>
+        </div>
+        <div class="table-card">
+          <div class="table-header"><h3>Enviadas</h3></div>
+          <div class="charge-list">${data.outgoing.length ? data.outgoing.map(outgoingChargeHTML).join('') : chargeEmptyHTML('Nenhuma cobrança enviada.')}</div>
+        </div>
+      </div>`;
+    updateChargeBadge();
+  } catch(e) {
+    $('main-content').innerHTML = `<div class="empty-state"><p>${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function chargeEmptyHTML(message) {
+  return `<div class="empty-state charge-empty"><div class="empty-icon">💲</div><p>${message}</p></div>`;
+}
+
+function incomingChargeHTML(c) {
+  return `<div class="charge-item">
+    <div class="charge-item-top"><strong>${escapeHtml(c.description)}</strong><span class="badge ${chargeStatusBadge(c.status)}">${chargeStatusLabel(c.status)}</span></div>
+    <div class="charge-amount">${fmtBRL(c.amount)}</div>
+    <div class="charge-meta">De <strong>${escapeHtml(c.requester_name)}</strong> · ${escapeHtml(c.charge_type)} · vence ${fmtDate(c.due_date)}</div>
+    ${c.status==='pending' ? `<div class="charge-actions"><button class="btn-secondary" onclick="rejectCharge(${c.id})">Recusar</button><button class="btn-primary" onclick="openAcceptCharge(${c.id})">Aceitar e classificar</button></div>` : ''}
+  </div>`;
+}
+
+function outgoingChargeHTML(c) {
+  return `<div class="charge-item">
+    <div class="charge-item-top"><strong>${escapeHtml(c.description)}</strong><span class="badge ${chargeStatusBadge(c.status)}">${chargeStatusLabel(c.status)}</span></div>
+    <div class="charge-amount">${fmtBRL(c.amount)}</div>
+    <div class="charge-meta">Para <strong>${escapeHtml(c.recipient_name)}</strong> · ${escapeHtml(c.charge_type)} · vence ${fmtDate(c.due_date)}</div>
+  </div>`;
+}
+
+async function openNewCharge() {
+  try {
+    const users = await api('GET','/api/charge-users');
+    openModal('Nova cobrança', `<div class="modal-form">
+      <div class="field"><label>Cobrar de</label><select id="charge-recipient"><option value="">Selecione o usuário</option>${users.map(u=>`<option value="${u.id}">${escapeHtml(u.name)} · ${escapeHtml(u.email)}</option>`).join('')}</select></div>
+      <div class="field"><label>Descrição da cobrança</label><input id="charge-description" maxlength="120" placeholder="Ex.: Parte do supermercado"></div>
+      <div class="field"><label>Tipo da cobrança</label><input id="charge-type" maxlength="80" placeholder="Ex.: Divisão de conta, empréstimo, mensalidade"></div>
+      <div class="row"><div class="field"><label>Valor (R$)</label><input id="charge-amount" type="number" min=".01" step=".01"></div><div class="field"><label>Vencimento</label><input id="charge-due-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div></div>
+      <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="createCharge()">Enviar cobrança</button></div>
+    </div>`);
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function createCharge() {
+  try {
+    await api('POST','/api/charges',{recipient_id:$('charge-recipient').value,description:$('charge-description').value,charge_type:$('charge-type').value,amount:$('charge-amount').value,due_date:$('charge-due-date').value});
+    closeModal(); toast('Cobrança enviada!'); renderCharges();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+function openAcceptCharge(id) {
+  const charge = currentCharges.incoming.find(c=>c.id===id);
+  if (!charge) return toast('Cobrança não encontrada','error');
+  const {description,due_date:dueDate,amount} = charge;
+  const cards = paymentMethods.filter(p=>p.type==='credito'||p.type==='debito');
+  openModal('Aceitar e classificar cobrança', `<div class="modal-form">
+    <div class="charge-accept-summary"><strong>${description}</strong><span>${fmtBRL(amount)}</span></div>
+    <div class="field"><label>Categoria da despesa</label><select id="charge-category">${CATEGORIES.map(c=>`<option value="${c}" ${c==='Outros'?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="row"><div class="field"><label>Data da despesa</label><input id="charge-date" type="date" value="${dueDate}"></div><div class="field"><label>Competência</label><input id="charge-competence" type="month" value="${dueDate.slice(0,7)}"></div></div>
+    <div class="field"><label>Forma de pagamento</label><select id="charge-payment"><option value="dinheiro">💵 Dinheiro</option><option value="pix">⚡ PIX</option>${cards.map(p=>`<option value="card-${p.id}">${p.type==='credito'?'💳':'🏧'} ${escapeHtml(p.name)}</option>`).join('')}<option value="debito">🏧 Débito (outro)</option></select></div>
+    <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="acceptCharge(${id})">Aceitar cobrança</button></div>
+  </div>`);
+}
+
+async function acceptCharge(id) {
+  const payment = parsePtypeValue($('charge-payment').value);
+  try {
+    await api('POST',`/api/charges/${id}/accept`,{category:$('charge-category').value,date:$('charge-date').value,competence_month:$('charge-competence').value,...payment});
+    closeModal(); toast('Cobrança aceita e lançamentos criados!'); loadSidebarPanels(); renderCharges();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function rejectCharge(id) {
+  try { await api('PATCH',`/api/charges/${id}/reject`,{}); toast('Cobrança recusada.'); renderCharges(); }
+  catch(e) { toast(e.message,'error'); }
+}
+
+async function updateChargeBadge() {
+  try {
+    const data = await api('GET','/api/charges/pending-count');
+    const badge = $('charge-badge');
+    if (!badge) return;
+    badge.textContent = data.total;
+    badge.classList.toggle('hidden', !data.total);
+  } catch { /* silencioso */ }
+}
+
+function startChargePolling() {
+  if (chargePollInterval) return;
+  updateChargeBadge();
+  chargePollInterval = setInterval(updateChargeBadge,60000);
+}
 
 // ── Lista de mercado ─────────────────────────────────────────
 async function renderShoppingList() {

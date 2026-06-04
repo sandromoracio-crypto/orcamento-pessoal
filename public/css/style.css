@@ -393,6 +393,28 @@ tr:hover td { background: var(--gray-50); }
 #toast.success { background: var(--green); }
 #toast.error   { background: var(--red); }
 
+/* ── Charges ───────────────────────────────────────────────── */
+.charges-toolbar { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:1rem; }
+.charges-toolbar h3 { font-size:1.1rem; }
+.charges-toolbar p { color:var(--gray-500); font-size:.85rem; }
+.charges-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+.charge-list { padding:.4rem 1.1rem; }
+.charge-item { padding:1rem .15rem; border-bottom:1px solid var(--gray-200); }
+.charge-item:last-child { border-bottom:none; }
+.charge-item-top { display:flex; align-items:flex-start; justify-content:space-between; gap:.75rem; }
+.charge-item-top strong { overflow-wrap:anywhere; }
+.charge-amount { font-size:1.25rem; font-weight:800; color:var(--green-dark); margin:.25rem 0; }
+.charge-meta { color:var(--gray-500); font-size:.8rem; }
+.charge-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
+.charge-actions .btn-primary,.charge-actions .btn-secondary { padding:.5rem .8rem; font-size:.82rem; }
+.charge-empty { padding:2rem 1rem; }
+.charge-accept-summary { display:flex; justify-content:space-between; gap:1rem; padding:.8rem; background:var(--green-bg); border-radius:8px; }
+.charge-accept-summary span { color:var(--green-dark); font-weight:800; white-space:nowrap; }
+@media (max-width: 800px) {
+  .charges-grid { grid-template-columns:1fr; }
+  .charges-toolbar { align-items:flex-start; flex-direction:column; }
+}
+
 /* ── Shopping list ─────────────────────────────────────────── */
 .shopping-card { background:#fff; border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
 .shopping-intro { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1.25rem; border-bottom:1px solid var(--gray-200); }

@@ -112,6 +112,7 @@
       <li><a href="#" class="nav-item" onclick="navigate('incomeSources')">💼 Proventos</a></li>
       <li><a href="#" class="nav-item" onclick="navigate('savings')">🏦 Cofrinhos</a></li>
       <li><a href="#" class="nav-item" onclick="navigate('goals')">🎯 Metas</a></li>
+      <li><a href="#" class="nav-item" onclick="navigate('charges')">💲 Cobranças</a></li>
       <li><a href="#" class="nav-item" onclick="navigate('shoppingList')">🛒 Lista de mercado</a></li>
       <li><a href="#" class="nav-item" onclick="navigate('history')">🧾 Histórico</a></li>
       <li><a href="#" class="nav-item admin-only hidden" onclick="navigate('users')">👥 Usuários</a></li>
@@ -166,6 +167,10 @@
         <button onclick="changeMonth(1)" title="Próximo mês">›</button>
         <div id="month-picker" class="month-picker hidden"></div>
       </div>
+      <button class="reminder-bell-btn" onclick="navigate('charges')" title="Cobranças recebidas">
+        💲
+        <span id="charge-badge" class="reminder-badge hidden">0</span>
+      </button>
       <button class="reminder-bell-btn" onclick="openReminderManager()" title="Lembretes">
         🔔
         <span id="reminder-badge" class="reminder-badge hidden">0</span>
@@ -238,6 +243,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="/vendor/xlsx.min.js"></script>
-<script src="/js/app.js?v=20260604-user-status"></script>
+<script src="/js/app.js?v=20260604-charges"></script>
 </body>
 </html>
