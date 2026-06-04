@@ -147,7 +147,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS goals (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', target_amount REAL NOT NULL, saved_amount REAL NOT NULL DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT ${nowExpr})`,
   `CREATE TABLE IF NOT EXISTS savings_accounts (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT DEFAULT '', color TEXT NOT NULL DEFAULT '#1b5e20', created_at TEXT DEFAULT ${nowExpr}, UNIQUE(user_id,name))`,
   `CREATE TABLE IF NOT EXISTS savings_deposits (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, account_id INT NOT NULL REFERENCES savings_accounts(id) ON DELETE CASCADE, amount REAL NOT NULL, date TEXT NOT NULL, note TEXT DEFAULT '', transaction_id INT REFERENCES transactions(id) ON DELETE SET NULL, created_at TEXT DEFAULT ${nowExpr})`,
-  `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
+  `CREATE TABLE IF NOT EXISTS password_reset_tokens (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`,
+  `CREATE TABLE IF NOT EXISTS reminders (id ${idType} PRIMARY KEY${idExtra}, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_at TEXT NOT NULL, done INT NOT NULL DEFAULT 0, cancelled INT NOT NULL DEFAULT 0, created_at TEXT DEFAULT ${nowExpr})`
 ];
 for (const t of TABLES) await dbExec(t);
 
@@ -696,6 +697,33 @@ app.delete('/api/savings/deposits/:id', auth, async (req,res) => {
   const dep=await dbGet('SELECT * FROM savings_deposits WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
   if (!dep) return res.status(404).json({error:'Não encontrado'});
   await dbRun('DELETE FROM savings_deposits WHERE id=?',[req.params.id]);
+  res.json({ok:true});
+});
+
+// ── Reminders ─────────────────────────────────────────────────
+app.get('/api/reminders', auth, async (req,res) =>
+  res.json(await dbAll('SELECT * FROM reminders WHERE user_id=? AND cancelled=0 ORDER BY remind_at',[req.user.id])));
+
+app.post('/api/reminders', auth, async (req,res) => {
+  const {title,remind_at}=req.body||{};
+  if (!title||!remind_at) return res.status(400).json({error:'Título e data/hora obrigatórios'});
+  const r=await dbInsert('INSERT INTO reminders (user_id,title,remind_at) VALUES (?,?,?)',[req.user.id,title,remind_at]);
+  res.json({id:r.lastInsertRowid});
+});
+
+app.patch('/api/reminders/:id', auth, async (req,res) => {
+  const rem=await dbGet('SELECT id FROM reminders WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
+  if (!rem) return res.status(404).json({error:'Não encontrado'});
+  const {done,cancelled}=req.body||{};
+  if (done!==undefined)      await dbRun('UPDATE reminders SET done=?      WHERE id=?',[done?1:0,      req.params.id]);
+  if (cancelled!==undefined) await dbRun('UPDATE reminders SET cancelled=? WHERE id=?',[cancelled?1:0, req.params.id]);
+  res.json({ok:true});
+});
+
+app.delete('/api/reminders/:id', auth, async (req,res) => {
+  const rem=await dbGet('SELECT id FROM reminders WHERE id=? AND user_id=?',[req.params.id,req.user.id]);
+  if (!rem) return res.status(404).json({error:'Não encontrado'});
+  await dbRun('DELETE FROM reminders WHERE id=?',[req.params.id]);
   res.json({ok:true});
 });
 

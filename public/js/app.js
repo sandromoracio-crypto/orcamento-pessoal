@@ -10,9 +10,15 @@ const CAT_COLORS = ['#1565C0','#E65100','#6A1B9A','#B71C1C','#00838F','#F9A825',
 const PM_TYPES = { dinheiro: '💵 Dinheiro', pix: '⚡ PIX', credito: '💳 Crédito', debito: '🏧 Débito' };
 let paymentMethods = []; // cached list
 let savingsAccounts = []; // cached list
+<<<<<<< HEAD
 let _historyPage = 1;
 let _txPage = 1;
 const PAGE_SIZE = 20;
+=======
+let remindersList = [];
+let currentAlertReminder = null;
+let reminderPollInterval = null;
+>>>>>>> 81c7c73 (feat: sistema de lembretes com notificação e modal de alerta)
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -189,6 +195,7 @@ async function bootApp() {
   updateMonthDisplay();
   loadSidebarPanels();
   navigate('dashboard');
+  startReminderPolling();
 }
 
 // ── Month navigation ─────────────────────────────────────────
@@ -1918,6 +1925,144 @@ async function exportExcel() {
   } catch(e) {
     toast(e.message || 'Não foi possível exportar a planilha.', 'error');
   }
+}
+
+// ── Lembretes ─────────────────────────────────────────────────
+async function loadReminders() {
+  try {
+    remindersList = await api('GET', '/api/reminders');
+    updateReminderBadge();
+    checkDueReminders();
+  } catch { /* silencioso */ }
+}
+
+function updateReminderBadge() {
+  const active = remindersList.filter(r => !r.done && !r.cancelled);
+  const badge = $('reminder-badge');
+  if (!badge) return;
+  if (active.length > 0) {
+    badge.textContent = active.length;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function checkDueReminders() {
+  if (currentAlertReminder) return; // já tem alerta aberto
+  const now = new Date();
+  const due = remindersList.find(r => !r.done && !r.cancelled && new Date(r.remind_at) <= now);
+  if (due) showReminderAlert(due);
+}
+
+function showReminderAlert(reminder) {
+  currentAlertReminder = reminder;
+  $('reminder-alert-title').textContent = reminder.title;
+  $('reminder-alert-overlay').classList.remove('hidden');
+}
+
+async function reminderDone() {
+  if (!currentAlertReminder) return;
+  try {
+    await api('PATCH', `/api/reminders/${currentAlertReminder.id}`, { done: true });
+    remindersList = remindersList.map(r => r.id === currentAlertReminder.id ? { ...r, done: 1 } : r);
+  } catch { toast('Erro ao atualizar lembrete', 'error'); }
+  currentAlertReminder = null;
+  $('reminder-alert-overlay').classList.add('hidden');
+  updateReminderBadge();
+  renderReminderList();
+  // checar próximo lembrete vencido
+  setTimeout(checkDueReminders, 500);
+}
+
+async function reminderCancel() {
+  if (!currentAlertReminder) return;
+  try {
+    await api('PATCH', `/api/reminders/${currentAlertReminder.id}`, { cancelled: true });
+    remindersList = remindersList.filter(r => r.id !== currentAlertReminder.id);
+  } catch { toast('Erro ao cancelar lembrete', 'error'); }
+  currentAlertReminder = null;
+  $('reminder-alert-overlay').classList.add('hidden');
+  updateReminderBadge();
+  renderReminderList();
+  setTimeout(checkDueReminders, 500);
+}
+
+function openReminderManager() {
+  renderReminderList();
+  $('reminder-manager-overlay').classList.remove('hidden');
+  // preencher datetime-local com agora + 1h como padrão
+  const dt = new Date(Date.now() + 3600000);
+  const local = dt.toISOString().slice(0, 16);
+  $('reminder-date-input').value = local;
+  $('reminder-title-input').value = '';
+  $('reminder-title-input').focus();
+}
+
+function closeReminderManager() {
+  $('reminder-manager-overlay').classList.add('hidden');
+}
+
+function renderReminderList() {
+  const el = $('reminder-list');
+  if (!el) return;
+  const active = remindersList.filter(r => !r.done && !r.cancelled);
+  const done   = remindersList.filter(r =>  r.done && !r.cancelled);
+
+  if (!active.length && !done.length) {
+    el.innerHTML = '<p style="color:var(--gray-500);text-align:center;padding:1rem">Nenhum lembrete cadastrado.</p>';
+    return;
+  }
+
+  const fmt = dt => {
+    const d = new Date(dt);
+    return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const makeItem = (r) => {
+    const isDue = !r.done && new Date(r.remind_at) <= new Date();
+    return `<div style="display:flex;align-items:center;gap:.5rem;padding:.6rem .75rem;border-radius:8px;background:${r.done ? 'var(--gray-100)' : isDue ? '#fff3e0' : 'var(--green-bg)'}">
+      <span style="font-size:1.1rem">${r.done ? '✅' : isDue ? '⚠️' : '🔔'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:.9rem;${r.done ? 'text-decoration:line-through;color:var(--gray-500)' : ''}">${r.title}</div>
+        <div style="font-size:.78rem;color:var(--gray-500)">${fmt(r.remind_at)}</div>
+      </div>
+      ${!r.done ? `<button onclick="deleteReminder(${r.id})" title="Remover" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:1rem;padding:.2rem">🗑️</button>` : ''}
+    </div>`;
+  };
+
+  el.innerHTML = active.map(makeItem).join('') +
+    (done.length ? `<div style="font-size:.78rem;color:var(--gray-500);margin-top:.75rem;margin-bottom:.25rem">Concluídos</div>` + done.map(makeItem).join('') : '');
+}
+
+async function createReminder(e) {
+  e.preventDefault();
+  const title    = $('reminder-title-input').value.trim();
+  const remind_at = $('reminder-date-input').value;
+  if (!title || !remind_at) return;
+  try {
+    const r = await api('POST', '/api/reminders', { title, remind_at });
+    remindersList.push({ id: r.id, title, remind_at, done: 0, cancelled: 0 });
+    updateReminderBadge();
+    renderReminderList();
+    $('reminder-title-input').value = '';
+    toast('Lembrete criado!');
+  } catch(err) { toast(err.message || 'Erro ao criar lembrete', 'error'); }
+}
+
+async function deleteReminder(id) {
+  try {
+    await api('DELETE', `/api/reminders/${id}`);
+    remindersList = remindersList.filter(r => r.id !== id);
+    updateReminderBadge();
+    renderReminderList();
+  } catch(err) { toast(err.message || 'Erro ao remover', 'error'); }
+}
+
+function startReminderPolling() {
+  if (reminderPollInterval) return;
+  loadReminders();
+  reminderPollInterval = setInterval(loadReminders, 60000);
 }
 
 // ── Pug mood ─────────────────────────────────────────────────

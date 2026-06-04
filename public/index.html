@@ -165,6 +165,10 @@
         <button onclick="changeMonth(1)" title="Próximo mês">›</button>
         <div id="month-picker" class="month-picker hidden"></div>
       </div>
+      <button class="reminder-bell-btn" onclick="openReminderManager()" title="Lembretes">
+        🔔
+        <span id="reminder-badge" class="reminder-badge hidden">0</span>
+      </button>
     </header>
 
     <main class="content" id="main-content">
@@ -184,6 +188,7 @@
   </div>
 </div>
 
+<<<<<<< HEAD
 <!-- LOADING MODAL -->
 <div id="loading-overlay" class="loading-overlay hidden">
   <div class="loading-modal">
@@ -193,6 +198,40 @@
       <div id="loading-bar" class="loading-bar"></div>
     </div>
     <div id="loading-pct" class="loading-pct">0%</div>
+=======
+<!-- MODAL GERENCIADOR DE LEMBRETES -->
+<div id="reminder-manager-overlay" class="modal-overlay hidden" onclick="closeReminderManager()">
+  <div class="modal" style="max-width:480px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>🔔 Lembretes</h3>
+      <button onclick="closeReminderManager()">✕</button>
+    </div>
+    <div style="padding:1rem">
+      <form onsubmit="createReminder(event)" style="display:flex;gap:.5rem;margin-bottom:1rem">
+        <input id="reminder-title-input" type="text" placeholder="Título do lembrete" required
+          style="flex:1;padding:.5rem .75rem;border:1px solid var(--gray-300);border-radius:8px;font-size:.9rem">
+        <input id="reminder-date-input" type="datetime-local" required
+          style="padding:.5rem .75rem;border:1px solid var(--gray-300);border-radius:8px;font-size:.9rem">
+        <button type="submit" class="btn-primary" style="white-space:nowrap">+ Adicionar</button>
+      </form>
+      <div id="reminder-list" style="display:flex;flex-direction:column;gap:.5rem;max-height:340px;overflow-y:auto"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL ALERTA DE LEMBRETE -->
+<div id="reminder-alert-overlay" class="modal-overlay hidden">
+  <div class="modal" style="max-width:400px;text-align:center" onclick="event.stopPropagation()">
+    <div style="padding:1.5rem">
+      <div style="font-size:2.5rem;margin-bottom:.5rem">🔔</div>
+      <h3 style="margin-bottom:.5rem">Lembrete!</h3>
+      <p id="reminder-alert-title" style="font-size:1.1rem;color:var(--gray-700);margin-bottom:1.5rem"></p>
+      <div style="display:flex;gap:.75rem;justify-content:center">
+        <button class="btn-primary" onclick="reminderDone()" style="background:var(--green)">✅ Executado</button>
+        <button class="btn-secondary" onclick="reminderCancel()" style="background:var(--red);color:#fff">❌ Cancelar</button>
+      </div>
+    </div>
+>>>>>>> 81c7c73 (feat: sistema de lembretes com notificação e modal de alerta)
   </div>
 </div>
 
