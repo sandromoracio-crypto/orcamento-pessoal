@@ -1320,10 +1320,10 @@ let _historyAllTxs = [];
 
 // ── Cobranças entre usuários ──────────────────────────────────
 const chargeStatusLabel = status => ({
-  pending:'Pendente', accepted:'Aceita', rejected:'Recusada', processing:'Processando'
+  pending:'Pendente', accepted:'Aceita', rejected:'Recusada', cancelled:'Cancelada', processing:'Processando'
 }[status] || status);
 const chargeStatusBadge = status => ({
-  pending:'badge-orange', accepted:'badge-green', rejected:'badge-red', processing:'badge-blue'
+  pending:'badge-orange', accepted:'badge-green', rejected:'badge-red', cancelled:'badge-red', processing:'badge-blue'
 }[status] || 'badge-blue');
 
 async function renderCharges() {
@@ -1370,6 +1370,7 @@ function outgoingChargeHTML(c) {
     <div class="charge-item-top"><strong>${escapeHtml(c.description)}</strong><span class="badge ${chargeStatusBadge(c.status)}">${chargeStatusLabel(c.status)}</span></div>
     <div class="charge-amount">${fmtBRL(c.amount)}</div>
     <div class="charge-meta">Para <strong>${escapeHtml(c.recipient_name)}</strong> · ${escapeHtml(c.charge_type)} · vence ${fmtDate(c.due_date)}</div>
+    ${c.status!=='cancelled' ? `<div class="charge-actions"><button class="btn-danger" onclick="cancelCharge(${c.id},'${c.status}')">Cancelar cobrança</button></div>` : ''}
   </div>`;
 }
 
@@ -1418,6 +1419,19 @@ async function acceptCharge(id) {
 async function rejectCharge(id) {
   try { await api('PATCH',`/api/charges/${id}/reject`,{}); toast('Cobrança recusada.'); renderCharges(); }
   catch(e) { toast(e.message,'error'); }
+}
+
+async function cancelCharge(id,status) {
+  const message = status==='accepted'
+    ? 'Cancelar esta cobrança? A despesa e a receita criadas no aceite também serão removidas.'
+    : 'Cancelar esta cobrança para o outro usuário?';
+  if (!confirm(message)) return;
+  try {
+    await api('PATCH',`/api/charges/${id}/cancel`,{});
+    toast('Cobrança cancelada!');
+    loadSidebarPanels();
+    renderCharges();
+  } catch(e) { toast(e.message,'error'); }
 }
 
 async function updateChargeBadge() {

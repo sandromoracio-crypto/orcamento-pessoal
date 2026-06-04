@@ -849,6 +849,17 @@ app.patch('/api/charges/:id/reject', auth, async (req,res) => {
   res.json({ok:true});
 });
 
+app.patch('/api/charges/:id/cancel', auth, async (req,res) => {
+  const charge = await dbGet("SELECT * FROM user_charges WHERE id=? AND requester_id=? AND status IN ('pending','rejected','accepted')",[req.params.id,req.user.id]);
+  if (!charge) return res.status(404).json({error:'Cobrança não encontrada ou já cancelada'});
+  const lock = await dbRun("UPDATE user_charges SET status='cancelled',responded_at="+nowExpr+" WHERE id=? AND requester_id=? AND status=?",[charge.id,req.user.id,charge.status]);
+  if (Number(lock?.changes??lock?.rowCount??0)===0) return res.status(409).json({error:'Cobrança está sendo processada. Tente novamente.'});
+  if (charge.expense_transaction_id) await dbRun('DELETE FROM transactions WHERE id=?',[charge.expense_transaction_id]);
+  if (charge.income_transaction_id) await dbRun('DELETE FROM transactions WHERE id=?',[charge.income_transaction_id]);
+  await dbRun('UPDATE user_charges SET expense_transaction_id=NULL,income_transaction_id=NULL WHERE id=?',[charge.id]);
+  res.json({ok:true,removed_transactions:!!(charge.expense_transaction_id||charge.income_transaction_id)});
+});
+
 app.post('/api/charges/:id/accept', auth, async (req,res) => {
   const charge = await dbGet(
     `SELECT c.*,requester.name AS requester_name,recipient.name AS recipient_name
@@ -880,9 +891,17 @@ app.post('/api/charges/:id/accept', auth, async (req,res) => {
       [req.user.id,date,expenseDesc,category,'Despesa',charge.amount,note,paymentType,paymentMethodId,comp]
     );
     expenseId=expense.lastInsertRowid;
+    const sourceName = `Cobranças de ${charge.recipient_name}`;
+    let incomeSource = await dbGet('SELECT id FROM payment_methods WHERE user_id=? AND name=?',[charge.requester_id,sourceName]);
+    if (!incomeSource) {
+      const source = await dbInsert('INSERT INTO payment_methods (user_id,name,type,color) VALUES (?,?,?,?)',[charge.requester_id,sourceName,'receita','#00838f']);
+      incomeSource={id:source.lastInsertRowid};
+    } else {
+      await dbRun("UPDATE payment_methods SET type='receita' WHERE id=?",[incomeSource.id]);
+    }
     const income = await dbInsert(
-      'INSERT INTO transactions (user_id,date,description,category,type,amount,note,payment_type,installments,installment_number,competence_month) VALUES (?,?,?,?,?,?,?,?,1,1,?)',
-      [charge.requester_id,date,incomeDesc,'Receita','Receita',charge.amount,note,'receita',comp]
+      'INSERT INTO transactions (user_id,date,description,category,type,amount,note,payment_type,payment_method_id,installments,installment_number,competence_month) VALUES (?,?,?,?,?,?,?,?,?,1,1,?)',
+      [charge.requester_id,date,incomeDesc,'Receita','Receita',charge.amount,note,'receita',incomeSource.id,comp]
     );
     incomeId=income.lastInsertRowid;
     await dbRun(`UPDATE user_charges SET status='accepted',expense_transaction_id=?,income_transaction_id=?,responded_at=${nowExpr} WHERE id=?`,[expenseId,incomeId,charge.id]);
