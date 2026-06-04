@@ -119,34 +119,6 @@
       <li><a href="#" class="nav-item" onclick="navigate('report')">📅 Relatório</a></li>
     </ul>
 
-    <!-- Painel Receitas do período -->
-    <div class="sidebar-panel" id="panel-receitas">
-      <button class="sidebar-panel-header" onclick="toggleSidePanel('receitas')">
-        <span>💚 Receitas</span>
-        <span id="panel-receitas-total" class="panel-total">—</span>
-        <span class="panel-chevron" id="chevron-receitas">▸</span>
-      </button>
-      <div class="sidebar-panel-body hidden" id="panel-receitas-body">
-        <div id="panel-receitas-list" class="panel-list">
-          <span class="panel-loading">Carregando...</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Painel Despesas do período -->
-    <div class="sidebar-panel" id="panel-despesas">
-      <button class="sidebar-panel-header" onclick="toggleSidePanel('despesas')">
-        <span>❤️ Despesas</span>
-        <span id="panel-despesas-total" class="panel-total">—</span>
-        <span class="panel-chevron" id="chevron-despesas">▸</span>
-      </button>
-      <div class="sidebar-panel-body hidden" id="panel-despesas-body">
-        <div id="panel-despesas-list" class="panel-list">
-          <span class="panel-loading">Carregando...</span>
-        </div>
-      </div>
-    </div>
-
     <button class="btn-logout" onclick="logout()">🚪 Sair</button>
   </nav>
 

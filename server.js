@@ -215,22 +215,36 @@ if (parseInt(userCount?.total || 0) > 0 && parseInt(adminCount?.total || 0) === 
 console.log('✅ Schema pronto');
 
 // ── Recurring helper ──────────────────────────────────────────
+// Otimizado: de 2N queries (N+1) → 3 queries fixas independente do nº de templates
 async function ensureRecurring(userId, month) {
   const templates = await dbAll(
     'SELECT * FROM recurring_templates WHERE user_id=? AND active=1 AND start_month<=?',
     [userId, month]
   );
+  if (!templates.length) return;
+
+  const ids = templates.map(t => t.id);
+
+  // Uma query busca todos os skips do mês para este usuário
+  const skipPlaceholders = USE_PG ? ids.map((_,i)=>`$${i+3}`).join(',') : ids.map(()=>'?').join(',');
+  const skips = await dbAll(
+    `SELECT recurring_template_id FROM recurring_skips WHERE user_id=? AND skip_month=? AND recurring_template_id IN (${skipPlaceholders})`,
+    [userId, month, ...ids]
+  );
+  const skippedSet = new Set(skips.map(s => s.recurring_template_id));
+
+  // Uma query busca todas as transações recorrentes já existentes neste mês
+  const exPlaceholders = USE_PG ? ids.map((_,i)=>`$${i+3}`).join(',') : ids.map(()=>'?').join(',');
+  const existing = await dbAll(
+    `SELECT recurring_template_id FROM transactions WHERE user_id=? AND ${effMonth()}=? AND recurring_template_id IN (${exPlaceholders})`,
+    [userId, month, ...ids]
+  );
+  const existingSet = new Set(existing.map(e => e.recurring_template_id));
+
+  // Insere apenas os que faltam
   for (const t of templates) {
-    const skipped = await dbGet(
-      'SELECT id FROM recurring_skips WHERE user_id=? AND recurring_template_id=? AND skip_month=?',
-      [userId, t.id, month]
-    );
-    if (skipped) continue;
-    const ex = await dbGet(
-      `SELECT id FROM transactions WHERE user_id=? AND recurring_template_id=? AND ${effMonth()}=?`,
-      [userId, t.id, month]
-    );
-    if (!ex) await dbInsert(
+    if (skippedSet.has(t.id) || existingSet.has(t.id)) continue;
+    await dbInsert(
       'INSERT INTO transactions (user_id,date,description,category,type,amount,note,payment_type,payment_method_id,installments,installment_number,recurring_template_id) VALUES (?,?,?,?,?,?,?,?,?,1,1,?)',
       [userId, month+'-01', t.description, t.category, t.type, t.amount, t.note||'', t.payment_type||'dinheiro', t.payment_method_id||null, t.id]
     );

@@ -92,26 +92,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--gray-10
 .btn-logout { margin: 1rem; background: rgba(255,255,255,.1); color: rgba(255,255,255,.8); border: none; padding: .65rem; border-radius: 8px; cursor: pointer; font-size: .9rem; transition: background .2s; width: calc(100% - 2rem); text-align: center; }
 .btn-logout:hover { background: rgba(255,255,255,.2); }
 
-/* ── Sidebar panels ─────────────────────────────────────────── */
-.sidebar-panel { border-top: 1px solid rgba(255,255,255,.1); }
-.sidebar-panel-header { width: 100%; background: none; border: none; color: rgba(255,255,255,.9); padding: .7rem 1rem; display: flex; align-items: center; gap: .4rem; cursor: pointer; font-size: .82rem; font-weight: 600; text-align: left; transition: background .15s; }
-.sidebar-panel-header:hover { background: rgba(255,255,255,.08); }
-.sidebar-panel-header span:first-child { flex: 1; }
-.panel-total { font-size: .78rem; font-weight: 700; opacity: .85; }
-.panel-chevron { font-size: .7rem; transition: transform .2s; margin-left: .2rem; }
-.panel-chevron.open { transform: rotate(90deg); }
-.sidebar-panel-body { overflow: hidden; }
-.panel-list { padding: .3rem .5rem .6rem; max-height: 200px; overflow-y: auto; }
-.panel-list::-webkit-scrollbar { width: 3px; }
-.panel-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 2px; }
-.panel-item { display: flex; align-items: baseline; gap: .4rem; padding: .28rem .4rem; border-radius: 5px; transition: background .12s; }
-.panel-item:hover { background: rgba(255,255,255,.08); }
-.panel-item-desc { flex: 1; font-size: .76rem; color: rgba(255,255,255,.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel-item-amount { font-size: .76rem; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
-.panel-item-amount.income { color: #a5d6a7; }
-.panel-item-amount.expense { color: #ef9a9a; }
-.panel-empty { font-size: .76rem; color: rgba(255,255,255,.45); text-align: center; padding: .5rem; }
-.panel-loading { font-size: .76rem; color: rgba(255,255,255,.4); padding: .4rem; display: block; text-align: center; }
 .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 150; }
 .main-wrapper { margin-left: var(--sidebar-w); display: flex; flex-direction: column; min-height: 100vh; }
 .topbar { height: var(--topbar-h); background: #fff; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; gap: 1rem; padding: 0 1.5rem; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,.06); }

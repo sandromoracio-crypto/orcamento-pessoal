@@ -41,9 +41,17 @@ function toast(msg, type='success') {
   el._t = setTimeout(() => el.classList.remove('show'), 3000);
 }
 
-async function api(method, path, body) {
+// AbortController por página — cancela fetches ao navegar antes de concluir
+let _pageAbort = null;
+function newPageSignal() {
+  _pageAbort?.abort();
+  _pageAbort = new AbortController();
+  return _pageAbort.signal;
+}
+
+async function api(method, path, body, signal) {
   const res = await fetch(path, {
-    method,
+    method, signal: signal || undefined,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {})
   });
@@ -196,7 +204,6 @@ async function bootApp() {
   savingsAccounts = await api('GET', '/api/savings').catch(() => []);
 
   updateMonthDisplay();
-  loadSidebarPanels();
   navigate('dashboard');
   startReminderPolling();
   startChargePolling();
@@ -212,7 +219,6 @@ function changeMonth(dir) {
   const d = new Date(y, m - 1 + dir, 1);
   currentMonth = d.toISOString().slice(0, 7);
   updateMonthDisplay();
-  loadSidebarPanels();
   const active = document.querySelector('.nav-item.active');
   if (active) navigate(active.dataset.page || 'dashboard');
 }
@@ -272,60 +278,7 @@ document.addEventListener('click', e => {
   if (sel && !sel.contains(e.target)) $('month-picker')?.classList.add('hidden');
 });
 
-// ── Sidebar Panels ────────────────────────────────────────────
-let _sidePanelOpen = { receitas: false, despesas: false };
 
-function toggleSidePanel(type) {
-  const body = $(`panel-${type}-body`);
-  const chevron = $(`chevron-${type}`);
-  const isOpen = !body.classList.contains('hidden');
-  body.classList.toggle('hidden', isOpen);
-  chevron.classList.toggle('open', !isOpen);
-  _sidePanelOpen[type] = !isOpen;
-  if (!isOpen) loadSidebarPanels(type); // reload on open
-}
-
-async function loadSidebarPanels(only) {
-  if (!token) return;
-  try {
-    // Reutiliza cache da página de lançamentos se for do mesmo mês
-    const txs = (_allTxs.length && document.querySelector('.nav-item.active')?.dataset?.page === 'transactions')
-      ? _allTxs
-      : await api('GET', `/api/transactions?month=${currentMonth}`);
-    const receitas = txs.filter(t => t.type === 'Receita');
-    const despesas = txs.filter(t => t.type === 'Despesa');
-
-    // Totals always update
-    const totR = receitas.reduce((s,t) => s + t.amount, 0);
-    const totD = despesas.reduce((s,t) => s + t.amount, 0);
-    const elR = $('panel-receitas-total');
-    const elD = $('panel-despesas-total');
-    if (elR) elR.textContent = fmtBRL(totR);
-    if (elD) elD.textContent = fmtBRL(totD);
-
-    // Lists only update if panel is open
-    if ((!only || only === 'receitas') && _sidePanelOpen.receitas) {
-      const list = $('panel-receitas-list');
-      if (list) list.innerHTML = receitas.length === 0
-        ? '<span class="panel-empty">Nenhuma receita neste mês</span>'
-        : receitas.map(t => `
-          <div class="panel-item">
-            <span class="panel-item-desc" title="${t.description}">${t.description}</span>
-            <span class="panel-item-amount income">+${fmtBRL(t.amount)}</span>
-          </div>`).join('');
-    }
-    if ((!only || only === 'despesas') && _sidePanelOpen.despesas) {
-      const list = $('panel-despesas-list');
-      if (list) list.innerHTML = despesas.length === 0
-        ? '<span class="panel-empty">Nenhuma despesa neste mês</span>'
-        : despesas.map(t => `
-          <div class="panel-item">
-            <span class="panel-item-desc" title="${t.description}">${t.description}</span>
-            <span class="panel-item-amount expense">-${fmtBRL(t.amount)}</span>
-          </div>`).join('');
-    }
-  } catch(e) { /* silencioso */ }
-}
 
 // ── Navigation ────────────────────────────────────────────────
 const pages = { dashboard: renderDashboard, transactions: renderTransactions, categories: renderCategories, cards: renderCards, incomeSources: renderIncomeSources, savings: renderSavings, goals: renderGoals, charges: renderCharges, shoppingList: renderShoppingList, history: renderHistory, users: renderUsers, report: renderReport };
@@ -338,7 +291,8 @@ function navigate(page) {
   Object.keys(charts).forEach(destroyChart);
   $('main-content').innerHTML = '<div class="loading-page"><div class="spinner"></div></div>';
   if (window.innerWidth < 768) closeSidebar();
-  pages[page]?.();
+  // Cancela fetches da página anterior antes de iniciar a nova
+  Promise.resolve(pages[page]?.()).catch(e => { if (e?.name !== 'AbortError') console.error(e); });
 }
 
 function toggleSidebar() {
@@ -361,7 +315,8 @@ function closeModal() { $('modal-overlay').classList.add('hidden'); }
 
 // ── Dashboard ─────────────────────────────────────────────────
 async function renderDashboard() {
-  const data = await api('GET', `/api/summary?month=${currentMonth}`);
+  const sig = newPageSignal();
+  const data = await api('GET', `/api/summary?month=${currentMonth}`, null, sig);
   const savingRate = data.income > 0 ? (data.balance / data.income) : 0;
 
   const limitsMap = {};
@@ -497,8 +452,9 @@ async function renderDashboard() {
 let _allTxs = []; // cache for client-side filtering
 
 async function renderTransactions() {
+  const sig = newPageSignal();
   _txPage = 1;
-  _allTxs = await api('GET', `/api/transactions?month=${currentMonth}`);
+  _allTxs = await api('GET', `/api/transactions?month=${currentMonth}`, null, sig);
 
   // Collect unique categories and payment methods for filter dropdowns
   const cats = [...new Set(_allTxs.map(t => t.category))].sort();
@@ -962,7 +918,7 @@ async function saveNewTransaction() {
 
     hideLoadingModal(() => showTxConfirmModal(summary));
     paymentMethods = await api('GET', '/api/payment-methods').catch(() => paymentMethods);
-    renderTransactions(); loadSidebarPanels();
+    renderTransactions();
   } catch(e) {
     hideLoadingModal();
     toast(e.message, 'error');
@@ -993,7 +949,7 @@ async function saveEditTransaction(id) {
     // Converter para fixo se solicitado
     if ($('tx-convert-fixed')?.checked) {
       await api('POST', `/api/transactions/${id}/make-fixed`);
-      closeModal(); toast('🔄 Convertido para lançamento fixo!'); renderTransactions(); loadSidebarPanels();
+      closeModal(); toast('🔄 Convertido para lançamento fixo!'); renderTransactions();
       return;
     }
     closeModal(); toast('Atualizado!'); renderTransactions();
@@ -1039,7 +995,7 @@ async function deleteTransaction(id, groupId, recurringId) {
   try {
     await api('DELETE', url);
     toast(recurringId && url.includes('all_recurring') ? '🔄 Fixo cancelado e futuros removidos!' : '🗑️ Removido!');
-    renderTransactions(); loadSidebarPanels();
+    renderTransactions();
   } catch(e) { toast(e.message, 'error'); }
 }
 
